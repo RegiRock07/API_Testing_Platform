@@ -1,25 +1,26 @@
 # backend/app/services/spec_parser.py
+#
+# Now uses SQLite via database.py instead of an in-memory dict.
+# Public API is identical so nothing else needs to change.
 
-from typing import Dict, Any, List
-import uuid
+from typing import Dict, Any
+from app.database import save_scan, get_scan
+
 
 class SpecParser:
-    def __init__(self):
-        self.specs = {}  # In-memory storage for now
-    
+
     def parse_spec(self, spec: Dict[str, Any]) -> Dict[str, Any]:
-        """Parse OpenAPI spec and extract key information"""
-        
-        # Basic validation
+        """Parse OpenAPI spec and extract key information."""
+
         if "openapi" not in spec and "swagger" not in spec:
             raise ValueError("Invalid OpenAPI/Swagger spec")
-        
-        # Extract endpoints
+
         endpoints = []
         paths = spec.get("paths", {})
+
         for path, methods in paths.items():
             is_id_based = "{" in path and "}" in path
-            
+
             for method, details in methods.items():
                 if method.upper() in ["GET", "POST", "PUT", "DELETE", "PATCH"]:
                     endpoints.append({
@@ -27,27 +28,22 @@ class SpecParser:
                         "method": method.upper(),
                         "summary": details.get("summary", ""),
                         "parameters": details.get("parameters", []),
-                        "is_id_based": is_id_based
+                        "request_body": details.get("requestBody", {}),
+                        "responses": list(details.get("responses", {}).keys()),
+                        "is_id_based": is_id_based,
                     })
-        
+
         return {
             "endpoints": endpoints,
             "total_endpoints": len(endpoints),
             "title": spec.get("info", {}).get("title", "Unnamed API"),
-            "version": spec.get("info", {}).get("version", "1.0.0")
+            "version": spec.get("info", {}).get("version", "1.0.0"),
         }
-    
+
     def store_spec(self, name: str, spec: Dict[str, Any], parsed_data: Dict[str, Any]) -> str:
-        """Store spec and return ID"""
-        spec_id = str(uuid.uuid4())
-        self.specs[spec_id] = {
-            "id": spec_id,
-            "name": name,
-            "original_spec": spec,
-            "parsed_data": parsed_data
-        }
-        return spec_id
-    
-    def get_spec(self, spec_id: str) -> Dict[str, Any]:
-        """Retrieve stored spec"""
-        return self.specs.get(spec_id)
+        """Persist spec to SQLite and return the scan ID."""
+        return save_scan(name, spec, parsed_data)
+
+    def get_spec(self, spec_id: str) -> Dict[str, Any] | None:
+        """Retrieve a stored scan from SQLite."""
+        return get_scan(spec_id)

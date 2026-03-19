@@ -1,0 +1,63 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────
+#  API Sentinel — docker-compose
+#
+#  Quick start (dev):
+#    docker-compose up
+#
+#  Production (set your real values in .env first):
+#    cp .env.example .env   # edit values
+#    docker-compose up -d
+#
+#  Access:
+#    Frontend  →  http://localhost:3000
+#    Backend   →  http://localhost:8000
+#    API docs  →  http://localhost:8000/docs
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Auth — leave blank to disable (dev mode)
+      - SENTINEL_API_KEY=${SENTINEL_API_KEY:-}
+      # Anthropic — for LLM analysis (optional)
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      # CORS — comma-separated origins, * = allow all
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      # DB path inside the container (persisted via volume)
+      - SENTINEL_DB_PATH=/data/sentinel.db
+    volumes:
+      # SQLite database persists here across restarts
+      - sentinel_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        # Baked into the React build at compile time
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
+    container_name: sentinel_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  sentinel_data:
+    driver: local
