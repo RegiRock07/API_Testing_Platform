@@ -3,3 +3,5 @@ uvicorn
 requests
 pyyaml
 python-multipart
+langgraph
+anthropic

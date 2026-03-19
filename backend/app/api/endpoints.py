@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from pydantic import BaseModel
 import json
 import yaml
+import requests
 
 from app.schemas.api_spec import APISpecUpload, APISpecResponse
 from app.services.spec_parser import SpecParser
@@ -18,6 +19,7 @@ orchestrator = Orchestrator()
 # -----------------------------
 class URLScanRequest(BaseModel):
     base_url: str
+    auth_token: str = ""   # optional Bearer token for authenticated APIs
 
 
 # -----------------------------
@@ -29,7 +31,6 @@ def upload_api_spec(upload: APISpecUpload):
 
     try:
         parsed_data = spec_parser.parse_spec(upload.spec)
-
         spec_id = spec_parser.store_spec(upload.name, upload.spec, parsed_data)
 
         return APISpecResponse(
@@ -68,7 +69,6 @@ async def upload_spec_file(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail="Unsupported file format")
 
         parsed_data = spec_parser.parse_spec(spec)
-
         spec_id = spec_parser.store_spec(file.filename, spec, parsed_data)
 
         return {
@@ -115,22 +115,63 @@ def run_agents(spec_id: str):
 
 
 # -----------------------------
-# Endpoint Discovery (Temporary)
+# FIX #4: Real Endpoint Discovery
+# Tries /openapi.json → /swagger.json → /openapi.yaml → fallback
 # -----------------------------
-def discover_endpoints(base_url: str):
+def discover_endpoints(base_url: str, auth_token: str = ""):
     """
-    Temporary endpoint discovery.
-    Later this will:
-    - detect /openapi.json
-    - detect /swagger.json
-    - crawl API routes
+    Fetch the real OpenAPI spec from the target API.
+    Tries common spec paths in order.
+    Returns (parsed_data, raw_spec) or raises HTTPException.
     """
 
-    return [
-        {"path": "/users", "method": "GET"},
-        {"path": "/posts", "method": "GET"},
-        {"path": "/todos", "method": "GET"}
+    base_url = base_url.rstrip("/")
+
+    candidate_paths = [
+        "/openapi.json",
+        "/swagger.json",
+        "/openapi.yaml",
+        "/swagger.yaml",
+        "/api-docs",
+        "/v1/openapi.json",
+        "/v2/openapi.json",
     ]
+
+    headers = {}
+    if auth_token:
+        headers["Authorization"] = f"Bearer {auth_token}"
+
+    last_error = None
+
+    for path in candidate_paths:
+        url = base_url + path
+        try:
+            r = requests.get(url, headers=headers, timeout=8)
+
+            if r.status_code == 200:
+                content_type = r.headers.get("content-type", "")
+
+                # parse YAML or JSON based on content-type or path
+                if "yaml" in content_type or path.endswith(".yaml"):
+                    spec = yaml.safe_load(r.text)
+                else:
+                    spec = r.json()
+
+                # validate it looks like an OpenAPI spec
+                if "paths" in spec and ("openapi" in spec or "swagger" in spec):
+                    parsed = spec_parser.parse_spec(spec)
+                    return parsed, spec, url
+
+        except Exception as e:
+            last_error = str(e)
+            continue
+
+    raise HTTPException(
+        status_code=422,
+        detail=f"Could not find an OpenAPI spec at {base_url}. "
+               f"Tried: {', '.join(candidate_paths)}. "
+               f"Last error: {last_error}"
+    )
 
 
 # -----------------------------
@@ -139,18 +180,23 @@ def discover_endpoints(base_url: str):
 @router.post("/api/scan-url")
 def scan_api_url(request: URLScanRequest):
 
-    base_url = request.base_url
+    base_url = request.base_url.rstrip("/")
 
-    endpoints = discover_endpoints(base_url)
+    # FIX #4: actually discover real endpoints from the target API
+    parsed_data, raw_spec, spec_url = discover_endpoints(base_url, request.auth_token)
 
-    parsed_data = {
-        "base_url": base_url,
-        "endpoints": endpoints
-    }
+    # store the discovered spec so it can be retrieved later
+    spec_id = spec_parser.store_spec(base_url, raw_spec, parsed_data)
+
+    # pass base_url into parsed_data so APITestingAgent uses the right host
+    parsed_data["base_url"] = base_url
 
     result = orchestrator.run_all(parsed_data)
 
     return {
         "status": "completed",
+        "spec_id": spec_id,
+        "spec_discovered_at": spec_url,
+        "endpoints_found": parsed_data["total_endpoints"],
         "result": result
     }
