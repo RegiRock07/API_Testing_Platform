@@ -19,9 +19,6 @@ class APITestingAgent:
         ]
 
 
-    # -------------------------
-    # Dynamic Fuzz Testing
-    # -------------------------
     def fuzz_test(self, path, method):
 
         fuzz_results = []

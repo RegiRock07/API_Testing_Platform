@@ -12,9 +12,9 @@ class SecurityAgent:
             path = ep["path"]
             method = ep["method"]
 
-            # -------------------------
+            
             # OWASP API1: BOLA
-            # -------------------------
+            
             if "{" in path and "}" in path:
                 findings.append({
                     "endpoint": path,
@@ -24,9 +24,9 @@ class SecurityAgent:
                     "description": "Endpoint uses object identifiers which may allow unauthorized access to other user resources."
                 })
 
-            # -------------------------
+            
             # OWASP API2: Broken Authentication
-            # -------------------------
+            
             sensitive_methods = ["POST", "PUT", "PATCH", "DELETE"]
 
             if method in sensitive_methods:
@@ -38,9 +38,9 @@ class SecurityAgent:
                     "description": f"{method} endpoint may require authentication but none detected."
                 })
 
-            # -------------------------
+            
             # OWASP API3: Excessive Data Exposure
-            # -------------------------
+            
             if method == "GET":
                 if any(keyword in path.lower() for keyword in sensitive_keywords):
 
@@ -52,10 +52,9 @@ class SecurityAgent:
                         "description": "Endpoint may expose sensitive object data in responses."
                     })
 
-            # -------------------------
+        
             # OWASP API4: Lack of Rate Limiting
-            # -------------------------
-
+        
             rate_limit_keywords = ["login", "auth", "token", "search", "password"]
 
             if any(keyword in path.lower() for keyword in rate_limit_keywords):
