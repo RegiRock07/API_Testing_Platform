@@ -1,0 +1,9 @@
+# env files with real secrets
+.env
+frontend/.env.local
+
+# SQLite database
+*.db
+
+# Docker volumes
+sentinel_data/

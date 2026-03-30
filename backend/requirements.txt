@@ -1,0 +1,11 @@
+fastapi
+uvicorn
+requests
+pyyaml
+python-multipart
+langgraph
+httpx
+PyJWT
+passlib[bcrypt]
+apscheduler
+reportlab

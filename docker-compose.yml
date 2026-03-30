@@ -1,0 +1,71 @@
+version: "3.9"
+
+# ─────────────────────────────────────────────────────────
+#  API Sentinel — docker-compose
+#
+#  Quick start (dev):
+#    docker-compose up
+#
+#  Production (set your real values in .env first):
+#    cp .env.example .env   # edit values
+#    docker-compose up -d
+#
+#  Access:
+#    Frontend  →  http://localhost:3000
+#    Backend   →  http://localhost:8000
+#    API docs  →  http://localhost:8000/docs
+# ─────────────────────────────────────────────────────────
+
+services:
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: sentinel_backend
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      # Auth — leave blank to disable (dev mode)
+      - SENTINEL_API_KEY=${SENTINEL_API_KEY:-}
+      # JWT Auth
+      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
+      - JWT_EXPIRY_DAYS=${JWT_EXPIRY_DAYS:-7}
+      # Ollama — local open-source LLM runtime
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
+      - PLANNER_MODEL=${PLANNER_MODEL:-llama3.1:8b}
+      - SECURITY_MODEL=${SECURITY_MODEL:-llama3.1:8b}
+      - DEEP_SCAN_MODEL=${DEEP_SCAN_MODEL:-llama3.1:8b}
+      - SYNTHESIS_MODEL=${SYNTHESIS_MODEL:-llama3.1:8b}
+      - TEST_GENERATION_MODEL=${TEST_GENERATION_MODEL:-llama3.1:8b}
+      - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-60}
+      # CORS
+      - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
+      # DB path inside the container
+      - SENTINEL_DB_PATH=/data/sentinel.db
+    volumes:
+      - sentinel_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=${REACT_APP_API_URL:-http://localhost:8000}
+    container_name: sentinel_frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+
+volumes:
+  sentinel_data:
+    driver: local
