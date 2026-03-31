@@ -160,6 +160,7 @@ function Input({ value, onChange, placeholder, type = "text", style = {} }) {
 
 const AGENTS = [
   { key: "planner", label: "Planner" },
+  { key: "test_generation", label: "Test Generation" },
   { key: "security", label: "Security" },
   { key: "api_testing", label: "API Testing" },
   { key: "deployment", label: "Deployment" },
@@ -618,7 +619,7 @@ function TestResults({ results = [], apiWasReachable }) {
 // FIX #4: Accept `initialTab` prop so that handleCompare() in App can
 // programmatically switch to the "compare" tab after fetching comparison data.
 
-function ReportView({ report, comparisonResult, initialTab }) {
+function ReportView({ report, comparisonResult, initialTab, token }) {
   // FIX #4: Use initialTab when provided, default to "security"
   const [tab, setTab] = useState(initialTab || "security");
 
@@ -852,13 +853,13 @@ function ReportView({ report, comparisonResult, initialTab }) {
             <h3 style={{ ...C.heading, marginBottom: 16 }}>Export Report</h3>
             <div style={{ display: "flex", gap: 12 }}>
               <button
-                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/json`, "_blank")}
+                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/json${token ? `?token=${token}` : ""}`, "_blank")}
                 style={{ ...C.btn, background: C.success }}
               >
                 Export JSON
               </button>
               <button
-                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/pdf`, "_blank")}
+                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/pdf${token ? `?token=${token}` : ""}`, "_blank")}
                 style={{ ...C.btn, background: C.primary }}
               >
                 Export PDF
@@ -867,6 +868,315 @@ function ReportView({ report, comparisonResult, initialTab }) {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ─── Schedule Manager ────────────────────────────────────────────
+
+function ScheduleManager({ apiFetch }) {
+  const [schedules, setSchedules] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [formData, setFormData] = useState({
+    scan_name: "", spec_id: "", base_url: "",
+    auth_type: "", auth_token: "",
+    interval_hours: 24, alert_on_new_findings: true,
+  });
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try { setSchedules(await apiFetch("/api/schedules")); }
+    catch { }
+    finally { setLoading(false); }
+  }, [apiFetch]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleCreate = async () => {
+    setError("");
+    if (!formData.scan_name) { setError("Name is required"); return; }
+    if (!formData.spec_id && !formData.base_url) { setError("Spec ID or Base URL required"); return; }
+    try {
+      await apiFetch("/api/schedules", {
+        method: "POST",
+        body: JSON.stringify(formData),
+      });
+      setShowForm(false);
+      setFormData({ scan_name: "", spec_id: "", base_url: "", auth_type: "", auth_token: "", interval_hours: 24, alert_on_new_findings: true });
+      refresh();
+    } catch (e) {
+      setError(e.message || "Failed to create schedule");
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await apiFetch(`/api/schedules/${id}`, { method: "DELETE" });
+      refresh();
+    } catch { }
+  };
+
+  const handleToggle = async (schedule) => {
+    try {
+      await apiFetch(`/api/schedules/${schedule.id}`, {
+        method: "PUT",
+        body: JSON.stringify({ enabled: !schedule.enabled }),
+      });
+      refresh();
+    } catch { }
+  };
+
+  const handleRunNow = async (id) => {
+    try {
+      await apiFetch(`/api/schedules/${id}/run`, { method: "POST" });
+    } catch { }
+  };
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ ...C.heading, marginBottom: 0 }}>Scheduled Scans</h2>
+        <Btn onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ New Schedule"}</Btn>
+      </div>
+
+      {error && <div style={{ background: C.redDim, border: `1px solid ${C.red}44`, borderRadius: 5, padding: "10px 14px", fontFamily: mono, fontSize: 12, color: C.red, marginBottom: 16 }}>✕ {error}</div>}
+
+      {showForm && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: 20, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Scan Name *</label>
+              <Input value={formData.scan_name} onChange={e => setFormData(d => ({ ...d, scan_name: e.target.value }))} placeholder="e.g. Nightly Security Scan" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Interval (hours)</label>
+              <Input type="number" value={formData.interval_hours} onChange={e => setFormData(d => ({ ...d, interval_hours: parseInt(e.target.value) || 24 }))} placeholder="24" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Spec ID</label>
+              <Input value={formData.spec_id} onChange={e => setFormData(d => ({ ...d, spec_id: e.target.value }))} placeholder="UUID of uploaded spec" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Base URL</label>
+              <Input value={formData.base_url} onChange={e => setFormData(d => ({ ...d, base_url: e.target.value }))} placeholder="https://api.example.com" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Auth Type</label>
+              <select value={formData.auth_type} onChange={e => setFormData(d => ({ ...d, auth_type: e.target.value }))} style={{ ...C.input, cursor: "pointer" }}>
+                <option value="">None</option>
+                <option value="bearer">Bearer Token</option>
+                <option value="api_key">API Key</option>
+                <option value="basic">Basic (user:pass)</option>
+              </select>
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Auth Token / Credentials</label>
+              <Input value={formData.auth_token} onChange={e => setFormData(d => ({ ...d, auth_token: e.target.value }))} placeholder="token or user:password" />
+            </div>
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 12 }}>
+            <label style={{ fontFamily: mono, fontSize: 11, color: C.textDim, display: "flex", alignItems: "center", gap: 6, cursor: "pointer" }}>
+              <input type="checkbox" checked={formData.alert_on_new_findings} onChange={e => setFormData(d => ({ ...d, alert_on_new_findings: e.target.checked }))} />
+              Alert on new critical/high findings
+            </label>
+          </div>
+          <Btn onClick={handleCreate}>Create Schedule</Btn>
+        </div>
+      )}
+
+      {loading && <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted, textAlign: "center", padding: 20 }}>Loading…</div>}
+
+      {!loading && schedules.length === 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: 40, textAlign: "center" }}>
+          <div style={{ fontFamily: mono, fontSize: 24, color: C.border, marginBottom: 8 }}>⏰</div>
+          <div style={{ fontFamily: mono, fontSize: 12, color: C.textMuted }}>No scheduled scans yet. Create one to automate recurring security scans.</div>
+        </div>
+      )}
+
+      {schedules.map(s => (
+        <div key={s.id} style={{
+          background: C.surface, border: `1px solid ${C.border}`,
+          borderLeft: `3px solid ${s.enabled ? C.green : C.textMuted}`,
+          borderRadius: 6, padding: "14px 18px", marginBottom: 8,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontFamily: mono, fontSize: 13, color: C.text, marginBottom: 4 }}>{s.scan_name}</div>
+              <div style={{ fontFamily: mono, fontSize: 10, color: C.textMuted }}>
+                Every {s.interval_hours}h · {s.enabled ? "Active" : "Paused"}
+                {s.next_run_at && ` · Next: ${fmt(s.next_run_at)}`}
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <Btn small variant={s.enabled ? "subtle" : "ghost"} onClick={() => handleToggle(s)}>{s.enabled ? "Pause" : "Resume"}</Btn>
+              <Btn small variant="ghost" onClick={() => handleRunNow(s.id)}>Run Now</Btn>
+              <Btn small variant="danger" onClick={() => handleDelete(s.id)}>✕</Btn>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Webhook Manager ─────────────────────────────────────────────
+
+function WebhookManager({ apiFetch }) {
+  const [webhooks, setWebhooks] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [showForm, setShowForm] = useState(false);
+  const [formData, setFormData] = useState({
+    name: "", target_url: "", secret: "",
+    event_types: ["scan.completed"],
+  });
+  const [testResult, setTestResult] = useState(null);
+  const [error, setError] = useState("");
+
+  const refresh = useCallback(async () => {
+    setLoading(true);
+    try { setWebhooks(await apiFetch("/api/webhooks")); }
+    catch { }
+    finally { setLoading(false); }
+  }, [apiFetch]);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleCreate = async () => {
+    setError("");
+    if (!formData.name || !formData.target_url) { setError("Name and URL are required"); return; }
+    try {
+      await apiFetch("/api/webhooks", {
+        method: "POST",
+        body: JSON.stringify(formData),
+      });
+      setShowForm(false);
+      setFormData({ name: "", target_url: "", secret: "", event_types: ["scan.completed"] });
+      refresh();
+    } catch (e) {
+      setError(e.message || "Failed to create webhook");
+    }
+  };
+
+  const handleDelete = async (id) => {
+    try {
+      await apiFetch(`/api/webhooks/${id}`, { method: "DELETE" });
+      refresh();
+    } catch { }
+  };
+
+  const handleTest = async () => {
+    setTestResult(null);
+    try {
+      const res = await apiFetch("/api/webhooks/test", {
+        method: "POST",
+        body: JSON.stringify(formData),
+      });
+      setTestResult(res);
+    } catch (e) {
+      setTestResult({ status: "error", message: e.message });
+    }
+  };
+
+  const toggleEventType = (evType) => {
+    setFormData(d => {
+      const current = d.event_types || [];
+      return {
+        ...d,
+        event_types: current.includes(evType)
+          ? current.filter(t => t !== evType)
+          : [...current, evType],
+      };
+    });
+  };
+
+  const EVENT_TYPES = ["scan.completed", "scan.new_critical"];
+
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+        <h2 style={{ ...C.heading, marginBottom: 0 }}>Webhooks</h2>
+        <Btn onClick={() => setShowForm(!showForm)}>{showForm ? "Cancel" : "+ New Webhook"}</Btn>
+      </div>
+
+      {error && <div style={{ background: C.redDim, border: `1px solid ${C.red}44`, borderRadius: 5, padding: "10px 14px", fontFamily: mono, fontSize: 12, color: C.red, marginBottom: 16 }}>✕ {error}</div>}
+
+      {showForm && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: 20, marginBottom: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Webhook Name *</label>
+              <Input value={formData.name} onChange={e => setFormData(d => ({ ...d, name: e.target.value }))} placeholder="e.g. Slack Alerts" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Target URL *</label>
+              <Input value={formData.target_url} onChange={e => setFormData(d => ({ ...d, target_url: e.target.value }))} placeholder="https://hooks.slack.com/..." />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Secret (optional)</label>
+              <Input type="password" value={formData.secret} onChange={e => setFormData(d => ({ ...d, secret: e.target.value }))} placeholder="HMAC secret for signature" />
+            </div>
+            <div>
+              <label style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4, display: "block" }}>Event Types</label>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {EVENT_TYPES.map(evType => (
+                  <label key={evType} style={{ fontFamily: mono, fontSize: 11, color: C.textDim, display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+                    <input type="checkbox" checked={(formData.event_types || []).includes(evType)} onChange={() => toggleEventType(evType)} />
+                    {evType}
+                  </label>
+                ))}
+              </div>
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 10 }}>
+            <Btn onClick={handleCreate}>Create Webhook</Btn>
+            <Btn variant="ghost" onClick={handleTest} disabled={!formData.target_url}>Test Webhook</Btn>
+          </div>
+          {testResult && (
+            <div style={{ marginTop: 10, fontFamily: mono, fontSize: 11, color: testResult.status === "sent" ? C.green : C.red }}>
+              {testResult.status === "sent" ? `✓ Sent (HTTP ${testResult.response_status})` : `✕ ${testResult.message}`}
+            </div>
+          )}
+        </div>
+      )}
+
+      {loading && <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted, textAlign: "center", padding: 20 }}>Loading…</div>}
+
+      {!loading && webhooks.length === 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, padding: 40, textAlign: "center" }}>
+          <div style={{ fontFamily: mono, fontSize: 24, color: C.border, marginBottom: 8 }}>🔔</div>
+          <div style={{ fontFamily: mono, fontSize: 12, color: C.textMuted }}>No webhooks configured. Create one to receive scan notifications.</div>
+        </div>
+      )}
+
+      {webhooks.map(w => (
+        <div key={w.id} style={{
+          background: C.surface, border: `1px solid ${C.border}`,
+          borderLeft: `3px solid ${C.accent}`,
+          borderRadius: 6, padding: "14px 18px", marginBottom: 8,
+        }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div>
+              <div style={{ fontFamily: mono, fontSize: 13, color: C.text, marginBottom: 4 }}>{w.name}</div>
+              <div style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, marginBottom: 4, wordBreak: "break-all" }}>
+                {w.target_url}
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                {(w.event_types || []).map(evType => (
+                  <Pill key={evType} label={evType} color={C.accent} />
+                ))}
+              </div>
+              {w.last_triggered_at && (
+                <div style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, marginTop: 4 }}>
+                  Last triggered: {fmt(w.last_triggered_at)}
+                </div>
+              )}
+            </div>
+            <Btn small variant="danger" onClick={() => handleDelete(w.id)}>✕</Btn>
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
@@ -907,12 +1217,10 @@ export default function App() {
   const [error, setError] = useState("");
   const [sidebarKey, setSidebarKey] = useState(0);
   const [streamEvents, setStreamEvents] = useState([]);
-  // FIX #5: Removed unused `schedules` and `webhooks` state.
   const [comparisonResult, setComparisonResult] = useState(null);
   const [showLogin, setShowLogin] = useState(false);
-  // FIX #4: activeTab2 now wires to ReportView's initialTab prop so
-  // handleCompare() can actually switch the visible tab after fetching data.
   const [activeTab2, setActiveTab2] = useState("security");
+  const [page, setPage] = useState("scan"); // "scan" | "schedules" | "webhooks"
 
   // ── NO duplicate apiFetch here (FIX #2) ──────────────────────────
 
@@ -1103,6 +1411,17 @@ export default function App() {
           <span style={{ fontFamily: mono, fontSize: 13, color: C.accent, letterSpacing: "0.1em" }}>
             ◈ {APP_NAME}
           </span>
+          <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {["scan", "schedules", "webhooks"].map(p => (
+              <button key={p} onClick={() => setPage(p)} style={{
+                fontFamily: mono, fontSize: 10, letterSpacing: "0.08em", textTransform: "uppercase",
+                padding: "6px 12px", borderRadius: 4, cursor: "pointer",
+                background: page === p ? C.accentDim : "transparent",
+                color: page === p ? C.accent : C.textMuted,
+                border: page === p ? `1px solid ${C.accentBorder}` : "1px solid transparent",
+              }}>{p}</button>
+            ))}
+          </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             {loading && <span style={{ fontFamily: mono, fontSize: 11, color: C.yellow }}>⟳ scanning…</span>}
             {user ? (
@@ -1127,6 +1446,9 @@ export default function App() {
 
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
 
+          {page === "scan" && (
+            <>
+
           {/* Error */}
           {error && (
             <div style={{
@@ -1149,7 +1471,7 @@ export default function App() {
               </div>
               <div style={{ padding: 14 }}>
                 <textarea rows={6} value={specText} onChange={e => setSpecText(e.target.value)}
-                  placeholder={"{\n  \"openapi\": \"3.0.0\",\n  ...\n}"}
+                  placeholder={'{\n  "openapi": "3.0.0",\n  ...\n}'}
                   style={{
                     fontFamily: mono, fontSize: 11, background: C.bg, color: C.text,
                     border: `1px solid ${C.border}`, borderRadius: 4, padding: 10,
@@ -1219,6 +1541,7 @@ export default function App() {
               report={report}
               comparisonResult={comparisonResult}
               initialTab={activeTab2}
+              token={token}
             />
           )}
 
@@ -1231,6 +1554,12 @@ export default function App() {
               </div>
             </div>
           )}
+
+            </>
+          )}
+
+          {page === "schedules" && <ScheduleManager apiFetch={apiFetch} />}
+          {page === "webhooks" && <WebhookManager apiFetch={apiFetch} />}
 
         </div>
       </div>

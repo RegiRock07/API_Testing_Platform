@@ -7,7 +7,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 import jwt as PyJWT
-from fastapi import HTTPException, Header
+from fastapi import HTTPException, Header, Query
+
 
 ALGORITHM = "HS256"
 
@@ -36,7 +37,10 @@ def decode_token(token: str) -> Optional[dict]:
         return None
 
 
-def get_current_user(authorization: Optional[str] = Header(default=None)) -> dict:
+def get_current_user(
+    authorization: Optional[str] = Header(default=None),
+    token: Optional[str] = Query(default=None, alias="token"),
+) -> dict:
     """
     FastAPI dependency that authenticates the request.
 
@@ -45,8 +49,9 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> dic
       return a dict with user_id="super" and is_super=True.
 
     JWT mode:
-      Otherwise, extract the Bearer token from the Authorization header,
+      Extract the Bearer token from the Authorization header (or ?token= query param),
       decode it, look up the user by id, and return the user dict.
+      The query param fallback allows export endpoints to work with window.open().
       Raises 401 if the token is missing/invalid or the user is not found.
     """
     sentinel_api_key = os.getenv("SENTINEL_API_KEY", "")
@@ -58,12 +63,17 @@ def get_current_user(authorization: Optional[str] = Header(default=None)) -> dic
             if key == sentinel_api_key:
                 return {"id": "super", "email": "super@api-sentinel", "is_super": True}
 
-    # JWT Bearer token flow
-    if not authorization or not authorization.startswith("Bearer "):
+    # JWT Bearer token flow — header takes priority, then query param fallback
+    jwt_token = None
+    if authorization and authorization.startswith("Bearer "):
+        jwt_token = authorization[len("Bearer "):]
+    elif token:
+        jwt_token = token  # query param fallback for export endpoints
+
+    if not jwt_token:
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
 
-    token = authorization[len("Bearer "):]
-    payload = decode_token(token)
+    payload = decode_token(jwt_token)
     if payload is None:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 

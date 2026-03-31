@@ -654,6 +654,94 @@ def verify_fix(spec_id: str, req: VerifyFixRequest, current_user: dict = Depends
     }
 
 
+@router.post("/api/run/{spec_id}/verify-fix/stream", dependencies=[AuthDep])
+async def verify_fix_stream(spec_id: str, req: VerifyFixRequest, current_user: dict = Depends(get_current_user)):
+    """SSE streaming verify-fix scan for real-time progress."""
+    from app.database import get_scan
+    from app.agents.api_testing_agent import APITestingAgent
+
+    scan = get_scan(spec_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Spec not found")
+    if current_user.get("id") != "super" and scan.get("user_id") != current_user["id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    previous_report = scan.get("report", {}) or {}
+    previous_tests = previous_report.get("api_test_results", [])
+    previous_findings = previous_report.get("security_findings", [])
+    targeted_cases = _build_targeted_test_cases(previous_tests, previous_findings)
+    parsed_data = scan.get("parsed_data", {})
+    auth_config = parsed_data.get("auth", {})
+
+    async def generate():
+        def make_event(agent: str, status: str, data: dict = None):
+            payload = {"agent": agent, "status": status}
+            if data:
+                payload["data"] = data
+            return f"data: {json.dumps(payload)}\n\n"
+
+        yield make_event("verify_fix", "running", {"targeted_cases": len(targeted_cases)})
+        await asyncio.sleep(0)
+
+        # Run targeted test cases
+        test_generation_result = {
+            "status": "completed",
+            "test_cases_generated": len(targeted_cases),
+            "test_cases": targeted_cases,
+        }
+
+        yield make_event("api_testing", "running")
+        await asyncio.sleep(0)
+        api_test_result = APITestingAgent().run(
+            parsed_data,
+            planner_result={"status": "skipped"},
+            test_generation_result=test_generation_result,
+            auth_config=auth_config,
+        )
+        yield make_event("api_testing", api_test_result.get("status", "completed"), {
+            "api_was_reachable": api_test_result.get("api_was_reachable", False),
+        })
+        await asyncio.sleep(0)
+
+        # Correlate results
+        yield make_event("synthesis", "running")
+        await asyncio.sleep(0)
+        orch = Orchestrator()
+        synthesis = orch._run_verify_fix_synthesis(
+            parsed_data=parsed_data,
+            api_test_result=api_test_result,
+            security_result={"status": "skipped", "findings": [], "total_findings": 0, "critical_count": 0, "high_count": 0},
+            targeted_cases=targeted_cases,
+        )
+        yield make_event("synthesis", "completed")
+        await asyncio.sleep(0)
+
+        previous_scan_id = req.previous_scan_id or spec_id
+        result = {
+            "previous_scan_id": previous_scan_id,
+            "previous_findings_count": len([f for f in previous_findings if f.get("confirmed")]),
+            "previous_failed_tests_count": len([t for ep in previous_tests for t in ep.get("tests", []) if t.get("passed") is False and not t.get("connection_error")]),
+            "new_findings_count": len(synthesis.get("new_issues", [])),
+            "fixed_findings": synthesis.get("fixed_findings", []),
+            "persistent_findings": synthesis.get("persistent_findings", []),
+            "new_issues": synthesis.get("new_issues", []),
+            "overall_status": synthesis.get("overall_status", "stable"),
+        }
+
+        yield make_event("report", "completed", {"report": result})
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        }
+    )
+
+
 # ─────────────────────────────────────────
 # Scheduled Scans
 # ─────────────────────────────────────────
@@ -730,7 +818,7 @@ def list_schedules(current_user: dict = Depends(get_current_user)):
     # Remove sensitive fields
     for s in schedules:
         s.pop("auth_config", None)
-        s.pop("secret", None, None)
+        s.pop("secret", None)
     return schedules
 
 

@@ -30,6 +30,8 @@ class ScanState(TypedDict):
     final_report: dict[str, Any]
     deep_scan_needed: bool
     auth_config: dict[str, Any]  # NEW
+    scan_mode: str  # "full" | "verify_fix" | "comparison"
+    previous_scan_id: str | None  # for verify_fix mode
 
 
 # ─────────────────────────────────────────
@@ -168,7 +170,7 @@ def _run_synthesis(state: ScanState) -> dict:
     if len(bola_issues) >= 3:
         cross_cutting.append({
             "pattern": "widespread_bola",
-            "description": f"{len(bola_issues)} endpoints expose object-level access risks — a统一的 authorization layer may be needed."
+            "description": f"{len(bola_issues)} endpoints expose object-level access risks — a unified authorization layer may be needed."
         })
 
     # Try LLM for executive summary
@@ -353,6 +355,8 @@ class Orchestrator:
             "final_report": {},
             "deep_scan_needed": False,
             "auth_config": auth_config or {},
+            "scan_mode": "full",
+            "previous_scan_id": None,
         }
 
         graph = get_graph()
