@@ -658,7 +658,9 @@ function TestResults({ results = [], apiWasReachable }) {
 // FIX #4: Accept `initialTab` prop so that handleCompare() in App can
 // programmatically switch to the "compare" tab after fetching comparison data.
 
-function ReportView({ report, comparisonResult, initialTab, token }) {
+function ReportView({ report, comparisonResult, initialTab, token, scanId }) {
+  const finalScanId = scanId || report.scan_id || report.id;
+
   // FIX #4: Use initialTab when provided, default to "security"
   const [tab, setTab] = useState(initialTab || "security");
 
@@ -882,7 +884,7 @@ function ReportView({ report, comparisonResult, initialTab, token }) {
           <div>
             <h3 style={{ ...C.heading, marginBottom: 16 }}>Scan Comparison</h3>
             {comparisonResult ? (
-              <ScanComparison scanA={report.scan_id} scanB={report.scan_id} comparison={comparisonResult} />
+              <ScanComparison scanA={finalScanId} scanB={finalScanId} comparison={comparisonResult} />
             ) : (
               <div style={{ color: C.textMuted, textAlign: "center", padding: 40 }}>
                 Run a comparison from the History sidebar to see diff.
@@ -896,13 +898,13 @@ function ReportView({ report, comparisonResult, initialTab, token }) {
             <h3 style={{ ...C.heading, marginBottom: 16 }}>Export Report</h3>
             <div style={{ display: "flex", gap: 12 }}>
               <button
-                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/json${token ? `?token=${token}` : ""}`, "_blank")}
+                onClick={() => window.open(`${API_URL}/api/scans/${finalScanId}/report/export/json${token ? `?token=${token}` : ""}`, "_blank")}
                 style={{ ...C.btn, background: C.success }}
               >
                 Export JSON
               </button>
               <button
-                onClick={() => window.open(`${API_URL}/api/scans/${report.scan_id}/report/export/pdf${token ? `?token=${token}` : ""}`, "_blank")}
+                onClick={() => window.open(`${API_URL}/api/scans/${finalScanId}/report/export/pdf${token ? `?token=${token}` : ""}`, "_blank")}
                 style={{ ...C.btn, background: C.primary }}
               >
                 Export PDF
@@ -1285,6 +1287,7 @@ export default function App() {
       body: JSON.stringify({ name: "uploaded_spec", spec: parsed }),
     });
     setSpecId(data.id); setActiveScanId(data.id);
+    await runScanStream(data.id);
   });
 
   const uploadFile = () => wrap(async () => {
@@ -1292,12 +1295,14 @@ export default function App() {
     const form = new FormData(); form.append("file", file);
     const data = await apiUpload("/api/specs/upload-file", form);
     setSpecId(data.id); setActiveScanId(data.id);
+    await runScanStream(data.id);
   });
 
   // FIX #6: runScanStream now includes the JWT Authorization header in addition
   // to the API key header. Previously, JWT-authenticated users would get 401.
-  const runScanStream = async () => {
-    if (!specId) return;
+  const runScanStream = async (targetSpecId) => {
+    const idToRun = targetSpecId && typeof targetSpecId === 'string' ? targetSpecId : specId;
+    if (!idToRun) return;
     setLoading(true);
     setError("");
     setReport(null);
@@ -1308,7 +1313,7 @@ export default function App() {
       if (apiKey) headers["X-API-Key"] = apiKey;
       if (token) headers["Authorization"] = `Bearer ${token}`; // FIX #6
 
-      const response = await fetch(`${BASE}/api/run/${specId}/stream`, {
+      const response = await fetch(`${BASE}/api/run/${idToRun}/stream`, {
         method: "POST",
         headers
       });
@@ -1337,7 +1342,7 @@ export default function App() {
 
             if (event.agent === "report" && event.status === "completed" && event.data && event.data.report) {
               setReport(event.data.report);
-              setActiveScanId(specId);
+              setActiveScanId(idToRun);
               setSidebarKey(k => k + 1);
             }
           } catch { /* ignore malformed */ }
@@ -1371,9 +1376,8 @@ export default function App() {
       method: "POST",
       body: JSON.stringify({ base_url: apiUrl }),
     });
-    setReport(data.result);
-    setActiveScanId(data.spec_id);
-    setSidebarKey(k => k + 1);
+    setSpecId(data.spec_id); setActiveScanId(data.spec_id);
+    await runScanStream(data.spec_id);
   });
 
   const loadHistoryScan = async (scan) => {
@@ -1585,6 +1589,7 @@ export default function App() {
               comparisonResult={comparisonResult}
               initialTab={activeTab2}
               token={token}
+              scanId={activeScanId}
             />
           )}
 

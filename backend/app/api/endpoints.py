@@ -423,17 +423,12 @@ def scan_api_url(request: URLScanRequest, current_user: dict = Depends(get_curre
     user_id = current_user.get("id") if current_user.get("id") != "super" else None
 
     spec_id = spec_parser.store_spec(base_url, raw_spec, parsed_data, user_id=user_id)
-    parsed_data["base_url"] = base_url
-
-    result = orchestrator.run_all(parsed_data)
-    save_report(spec_id, result)
-
+    # Return immediately without blocking! The frontend will call /stream
     return {
-        "status": "completed",
+        "status": "discovered",
         "spec_id": spec_id,
         "spec_discovered_at": spec_url,
         "endpoints_found": parsed_data["total_endpoints"],
-        "result": result,
     }
 
 
