@@ -178,9 +178,7 @@ def _run_synthesis(state: ScanState) -> dict:
     remediation_roadmap = None
     overall_risk_score = None
 
-    ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    model = os.getenv("SYNTHESIS_MODEL", os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"))
-    timeout = int(os.getenv("OLLAMA_TIMEOUT", "60"))
+    from app.services.llm_service import call_llm, parse_llm_json, LLMError
 
     try:
         system_prompt = (
@@ -214,23 +212,21 @@ Respond ONLY with valid JSON:
   "overall_risk_score": "e.g. 7.5/10 — HIGH RISK"
 }}"""
 
-        response = requests.post(
-            f"{ollama_url}/api/chat",
-            json={"model": model, "messages": [
+        try:
+            raw = call_llm([
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_prompt}
-            ], "stream": False},
-            timeout=timeout
-        )
-        response.raise_for_status()
-        raw = response.json()["message"]["content"]
-        parsed = parse_llm_json(raw, fallback=None)
-        if parsed:
-            executive_summary = parsed.get("executive_summary")
-            remediation_roadmap = parsed.get("remediation_roadmap")
-            overall_risk_score = parsed.get("overall_risk_score")
+            ])
+            parsed = parse_llm_json(raw, fallback=None)
+            if parsed:
+                executive_summary = parsed.get("executive_summary")
+                remediation_roadmap = parsed.get("remediation_roadmap")
+                overall_risk_score = parsed.get("overall_risk_score")
+        except LLMError as e:
+            print(f"[Synthesis] LLM Error: {e}")
+
     except Exception as e:
-        print(f"[Synthesis] LLM call failed: {e}")
+        print(f"[Synthesis] Unexpected Synthesis error: {e}")
 
     # Fallback if LLM failed
     if not executive_summary:

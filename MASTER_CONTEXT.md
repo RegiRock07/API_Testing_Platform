@@ -10,7 +10,7 @@ API Sentinel is an automated API security testing platform. Users upload an Open
 
 **Version 1 (current)**: Rule-based agents, linear LangGraph pipeline, Anthropic API for a summary-only LLM call.
 
-**Version 2 (building now)**: LLM-driven agents using Ollama (open-source, local, no paid API keys), real conditional branching in LangGraph, agents that communicate context to each other, streaming progress, and a richer report structure.
+**Version : LLM-driven agents using Ollama (open-source, local, no paid API keys), real conditional branching in LangGraph, agents that communicate context to each other, streaming progress, and a richer report structure.
 
 ---
 

@@ -3,38 +3,13 @@ import json
 import requests
 
 
-def parse_llm_json(raw_text: str, fallback=None):
-    try:
-        text = raw_text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        text = text.strip()
-        return json.loads(text)
-    except Exception as e:
-        print(f"[DeepScanAgent] LLM JSON parse failed: {e}. Raw: {raw_text[:200]}")
-        return fallback
-
+from app.services.llm_service import call_llm, parse_llm_json, LLMError
 
 class DeepScanAgent:
 
     def __init__(self):
-        self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = os.getenv("DEEP_SCAN_MODEL", os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"))
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "60"))
-
-    def _call_llm(self, messages: list) -> str | None:
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={"model": self.model, "messages": messages, "stream": False},
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()["message"]["content"]
-        except Exception as e:
-            print(f"[DeepScanAgent] Ollama call failed: {e}")
-            return None
+        # Configuration is now handled in llm_service
+        pass
 
     def run(self, security_result: dict) -> dict:
         findings = security_result.get("findings", [])
@@ -99,10 +74,14 @@ Respond ONLY with a valid JSON object matching this exact structure:
 
 Do not include any text before or after the JSON."""
 
-            raw = self._call_llm([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
+            try:
+                raw = call_llm([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ])
+            except LLMError as e:
+                print(f"[DeepScanAgent] LLM Error: {e}")
+                raw = None
 
             enriched = dict(finding)
             if raw:

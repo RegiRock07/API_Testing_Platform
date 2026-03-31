@@ -32,14 +32,14 @@ services:
       # JWT Auth
       - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
       - JWT_EXPIRY_DAYS=${JWT_EXPIRY_DAYS:-7}
-      # Ollama — local open-source LLM runtime
+      # ── LLM Configuration ──────────────────────────────────────────
+      - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
+      - GROQ_MODEL=${GROQ_MODEL:-llama3-70b-8192}
+      - GROQ_TEMPERATURE=${GROQ_TEMPERATURE:-0.2}
+      # ── Ollama (Secondary Provider / Fallback) ───────────────────────
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
       - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
-      - PLANNER_MODEL=${PLANNER_MODEL:-llama3.1:8b}
-      - SECURITY_MODEL=${SECURITY_MODEL:-llama3.1:8b}
-      - DEEP_SCAN_MODEL=${DEEP_SCAN_MODEL:-llama3.1:8b}
-      - SYNTHESIS_MODEL=${SYNTHESIS_MODEL:-llama3.1:8b}
-      - TEST_GENERATION_MODEL=${TEST_GENERATION_MODEL:-llama3.1:8b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-60}
       # CORS
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}

@@ -2,20 +2,7 @@ import os
 import json
 import requests
 from typing import TypedDict
-
-
-def parse_llm_json(raw_text: str, fallback=None):
-    """Strip markdown fences and parse LLM JSON response."""
-    try:
-        text = raw_text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        text = text.strip()
-        return json.loads(text)
-    except Exception as e:
-        print(f"[TestGeneratorAgent] LLM JSON parse failed: {e}")
-        return fallback
+from app.services.llm_service import call_llm, parse_llm_json, LLMError
 
 
 # ─────────────────────────────────────────
@@ -50,25 +37,16 @@ FALLBACK_TEST_CASES = [
 ]
 
 
+from app.services.llm_service import call_llm, parse_llm_json, LLMError
+
+# ... fallback test cases omitted for brevity ...
+# (We preserve FALLBACK_TEST_CASES, so just replace __init__ and _call_llm)
+
 class TestGeneratorAgent:
 
     def __init__(self):
-        self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = os.getenv("TEST_GENERATION_MODEL", os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b"))
-        self.timeout = int(os.getenv("OLLAMA_TIMEOUT", "60"))
-
-    def _call_llm(self, messages: list) -> str | None:
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={"model": self.model, "messages": messages, "stream": False},
-                timeout=self.timeout
-            )
-            response.raise_for_status()
-            return response.json()["message"]["content"]
-        except Exception as e:
-            print(f"[TestGeneratorAgent] Ollama call failed: {e}")
-            return None
+        # Configuration is now handled in llm_service
+        pass
 
     def _generate_for_endpoint(self, endpoint: dict, all_endpoints: list) -> list:
         """Generate 5-10 test cases for a single endpoint using LLM."""
@@ -127,10 +105,14 @@ Respond ONLY with a JSON array of test case objects like:
 Return between 5 and 10 test cases total for this endpoint.
 Do not add any text before or after the JSON array."""
 
-        raw = self._call_llm([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ])
+        try:
+            raw = call_llm([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
+        except LLMError as e:
+            print(f"[TestGeneratorAgent] LLM Error: {e}")
+            raw = None
 
         if raw is None:
             return []

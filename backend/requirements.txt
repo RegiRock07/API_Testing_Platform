@@ -9,3 +9,4 @@ PyJWT
 passlib[bcrypt]
 apscheduler
 reportlab
+groq

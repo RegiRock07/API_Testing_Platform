@@ -3,6 +3,8 @@ import re
 import json
 import time
 import requests
+from urllib.parse import urljoin
+from app.services.llm_service import call_llm, parse_llm_json as _parse_llm_json, LLMError
 
 
 PAYLOAD_CATEGORIES = {
@@ -54,41 +56,11 @@ PAYLOAD_CATEGORIES = {
 }
 
 
-def _parse_llm_json(raw_text: str, fallback=None):
-    """Parse JSON from LLM response, stripping markdown fences."""
-    try:
-        text = raw_text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        text = text.strip()
-        return json.loads(text)
-    except Exception:
-        return fallback
-
-
 class APITestingAgent:
 
     def __init__(self, base_url=None):
         self.base_url = base_url or "http://localhost:8001"
         self.timeout = 5
-        self.ollama_url = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-        self.model = os.getenv("OLLAMA_DEFAULT_MODEL", "llama3.1:8b")
-        self.llm_timeout = int(os.getenv("OLLAMA_TIMEOUT", "60"))
-
-    def _call_llm(self, messages: list) -> str | None:
-        """Call Ollama. Returns response text or None on failure."""
-        try:
-            response = requests.post(
-                f"{self.ollama_url}/api/chat",
-                json={"model": self.model, "messages": messages, "stream": False},
-                timeout=self.llm_timeout
-            )
-            response.raise_for_status()
-            return response.json()["message"]["content"]
-        except Exception as e:
-            print(f"[APITestingAgent] Ollama call failed: {e}")
-            return None
 
     def _interpret_500_response(
         self,
@@ -119,10 +91,15 @@ Respond ONLY with:
 
 Prefer false (benign) if uncertain. Respond ONLY with JSON."""
 
-        raw = self._call_llm([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ])
+        try:
+            raw = call_llm([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
+        except LLMError as e:
+            print(f"[APITestingAgent] LLM Error: {e}")
+            raw = None
+
         if raw is None:
             return None
         parsed = _parse_llm_json(raw, fallback=None)
@@ -169,10 +146,14 @@ Respond ONLY with this exact JSON (no markdown, no explanation):
 
 Respond ONLY with the JSON object."""
 
-        raw = self._call_llm([
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt}
-        ])
+        try:
+            raw = call_llm([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ])
+        except LLMError as e:
+            print(f"[APITestingAgent] LLM Error: {e}")
+            raw = None
 
         if raw is None:
             # Fallback: LLM unavailable — use simple heuristic
