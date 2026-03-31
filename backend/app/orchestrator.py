@@ -89,7 +89,8 @@ def api_testing_node(state: ScanState) -> ScanState:
         state["parsed_data"],
         planner_result=state.get("planner_result", {}),
         test_generation_result=state.get("test_generation_result", {}),
-        auth_config=state.get("auth_config", {})
+        auth_config=state.get("auth_config", {}),
+        security_result=state.get("security_result", {}),
     )
     return {**state, "api_test_result": result}
 
@@ -141,39 +142,79 @@ def _run_synthesis(state: ScanState) -> dict:
     deployment = state.get("deployment_result", {})
     deep_scan = state.get("deep_scan_result", {})
 
-    findings = security.get("findings", [])
+    findings = list(security.get("findings", []))  # copy so we can mutate
     test_results = api_testing.get("results", [])
 
-    # Correlate findings + test failures on same endpoint
-    correlated_findings = []
-    failed_endpoints = set()
+    # ── Phase 1: Cross-correlate validation results ────────────
+    # Collect BOLA and auth validation outcomes keyed by (endpoint, method)
+    bola_confirmed = set()   # (endpoint, method) pairs with SECURITY_FAILURE
+    auth_confirmed = set()   # (endpoint, method) pairs with SECURITY_FAILURE
+
     for ep_result in test_results:
+        ep_path = ep_result.get("endpoint", "")
+        ep_method = ep_result.get("method", "")
         for t in ep_result.get("tests", []):
-            if t.get("passed") is False and not t.get("connection_error"):
-                failed_endpoints.add(ep_result["endpoint"])
+            tt = t.get("test_type", "")
+            outcome = t.get("outcome", "")
+            if tt == "bola_validation" and outcome == "SECURITY_FAILURE":
+                bola_confirmed.add((ep_path, ep_method))
+            if tt == "auth_bypass_validation" and outcome == "SECURITY_FAILURE":
+                auth_confirmed.add((ep_path, ep_method))
 
+    # ── Phase 2: Promote matching findings to DYNAMIC ─────────
     for f in findings:
-        if f.get("endpoint") in failed_endpoints:
+        fep = f.get("endpoint", "")
+        fmethod = f.get("method", "")
+        vuln_lower = (f.get("vulnerability") or "").lower()
+
+        if (fep, fmethod) in bola_confirmed and ("bola" in vuln_lower or "object" in vuln_lower):
+            f["detection_type"] = "DYNAMIC"
+            f["confidence"] = "HIGH"
+            f["severity"] = "HIGH"
             f["confirmed"] = True
-        correlated_findings.append(f)
+            f["vulnerability"] = "Confirmed BOLA — Unauthorized Access Detected"
 
-    # Cross-cutting concerns
+        if (fep, fmethod) in auth_confirmed and ("auth" in vuln_lower):
+            f["detection_type"] = "DYNAMIC"
+            f["confidence"] = "HIGH"
+            f["severity"] = "HIGH"
+            f["confirmed"] = True
+            f["vulnerability"] = "Confirmed Auth Bypass Detected"
+
+    correlated_findings = findings
+
+    # ── Phase 3: Cross-cutting concerns (use confidence, not just count) ──
     cross_cutting = []
-    auth_issues = [f for f in correlated_findings if "auth" in f.get("vulnerability", "").lower()]
-    if len(auth_issues) >= 3:
+    auth_issues = [f for f in correlated_findings
+                   if "auth" in (f.get("vulnerability") or "").lower()]
+    confirmed_auth = [f for f in auth_issues if f.get("confirmed")]
+    if len(confirmed_auth) >= 1:
         cross_cutting.append({
-            "pattern": "widespread_auth_failure",
-            "description": f"{len(auth_issues)} endpoints have authentication issues — this may be an architectural gap, not just individual misconfigurations."
+            "pattern": "confirmed_auth_bypass",
+            "description": f"{len(confirmed_auth)} endpoint(s) have CONFIRMED authentication bypass — immediate remediation required."
+        })
+    elif len(auth_issues) >= 3:
+        cross_cutting.append({
+            "pattern": "widespread_auth_weakness",
+            "description": f"{len(auth_issues)} endpoints have potential authentication weaknesses (static analysis)."
         })
 
-    bola_issues = [f for f in correlated_findings if "bola" in f.get("vulnerability", "").lower() or "object level" in f.get("vulnerability", "").lower()]
-    if len(bola_issues) >= 3:
+    bola_issues = [f for f in correlated_findings
+                   if "bola" in (f.get("vulnerability") or "").lower()
+                   or "object" in (f.get("vulnerability") or "").lower()]
+    confirmed_bola = [f for f in bola_issues if f.get("confirmed")]
+    if len(confirmed_bola) >= 1:
         cross_cutting.append({
-            "pattern": "widespread_bola",
-            "description": f"{len(bola_issues)} endpoints expose object-level access risks — a unified authorization layer may be needed."
+            "pattern": "confirmed_bola",
+            "description": f"{len(confirmed_bola)} endpoint(s) have CONFIRMED BOLA — unauthorized object access detected."
+        })
+    elif len(bola_issues) >= 3:
+        cross_cutting.append({
+            "pattern": "widespread_bola_risk",
+            "description": f"{len(bola_issues)} endpoints have potential BOLA risks (static analysis)."
         })
 
-    # Try LLM for executive summary
+    # ── Phase 4: Executive summary (LLM or deterministic fallback) ──
     executive_summary = None
     remediation_roadmap = None
     overall_risk_score = None
@@ -186,30 +227,24 @@ def _run_synthesis(state: ScanState) -> dict:
             "Provide a brief executive summary and remediation roadmap.\n"
             "Respond ONLY in valid JSON."
         )
-        user_prompt = f"""Summarize this API security scan for a non-technical executive.
+        user_prompt = f"""Summarize this API security scan:
 
 API Title: {state['parsed_data'].get('title', 'Unknown')}
 Endpoints scanned: {len(state['parsed_data'].get('endpoints', []))}
-Critical findings: {security.get('critical_count', 0)}
-High findings: {security.get('high_count', 0)}
-Medium findings: {len([f for f in findings if f.get('severity') == 'MEDIUM'])}
-Low findings: {len([f for f in findings if f.get('severity') == 'LOW'])}
-Deployment health: {deployment.get('status', 'unknown')}
+Confirmed vulnerabilities: {len([f for f in findings if f.get('confirmed')])}
+Static findings: {len([f for f in findings if f.get('detection_type') == 'STATIC'])}
 API reachable: {api_testing.get('api_was_reachable', False)}
-Deep scan performed: {deep_scan.get('deep_scan_performed', False)}
+Security failures (tests): {api_testing.get('security_failure_count', 0)}
+Expected behavior (tests): {api_testing.get('expected_failure_count', 0)}
 
 Top findings:
 {json.dumps(findings[:5], indent=2)}
 
-Respond ONLY with valid JSON:
+Respond with JSON:
 {{
-  "executive_summary": "3 sentences, non-technical overview of the risk",
-  "remediation_roadmap": {{
-    "immediate": ["action item", "action item"],
-    "short_term": ["action item"],
-    "long_term": ["action item"]
-  }},
-  "overall_risk_score": "e.g. 7.5/10 — HIGH RISK"
+  "executive_summary": "3 sentences",
+  "remediation_roadmap": {{"immediate": [...], "short_term": [...], "long_term": [...]}},
+  "overall_risk_score": "X/10 — LEVEL"
 }}"""
 
         try:
@@ -224,28 +259,28 @@ Respond ONLY with valid JSON:
                 overall_risk_score = parsed.get("overall_risk_score")
         except LLMError as e:
             print(f"[Synthesis] LLM Error: {e}")
-
     except Exception as e:
-        print(f"[Synthesis] Unexpected Synthesis error: {e}")
+        print(f"[Synthesis] Unexpected error: {e}")
 
-    # Fallback if LLM failed
+    # Deterministic fallback
     if not executive_summary:
         total = len(findings)
-        critical = security.get("critical_count", 0)
-        high = security.get("high_count", 0)
+        confirmed = len([f for f in findings if f.get("confirmed")])
+        critical = len([f for f in findings if f.get("severity") == "CRITICAL"])
+        high = len([f for f in findings if f.get("severity") == "HIGH"])
         risk_score = (critical * 10 + high * 7 + (total - critical - high) * 3) / max(total, 1)
         risk_score = min(10, round(risk_score, 1))
-        if risk_score >= 7:
-            risk_label = "HIGH RISK"
-        elif risk_score >= 4:
-            risk_label = "MEDIUM RISK"
-        else:
-            risk_label = "LOW RISK"
-        executive_summary = f"This API has {total} security findings including {critical} critical and {high} high severity issues. The deployment is {deployment.get('status', 'unknown')}. Recommend addressing critical findings immediately."
+        risk_label = "HIGH RISK" if risk_score >= 7 else ("MEDIUM RISK" if risk_score >= 4 else "LOW RISK")
+
+        executive_summary = (
+            f"This API has {total} security findings ({confirmed} confirmed via live testing). "
+            f"The deployment is {deployment.get('status', 'unknown')}. "
+            f"Recommend addressing confirmed findings immediately."
+        )
         overall_risk_score = f"{risk_score}/10 — {risk_label}"
         remediation_roadmap = {
-            "immediate": ["Fix critical severity findings immediately"],
-            "short_term": ["Address high severity findings", "Implement rate limiting"],
+            "immediate": ["Fix confirmed security failures immediately"],
+            "short_term": ["Investigate static HIGH findings"],
             "long_term": ["Conduct full penetration test", "Implement security headers"]
         }
 

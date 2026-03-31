@@ -3,9 +3,12 @@ import re
 import json
 import time
 import requests
-from urllib.parse import urljoin
 from app.services.llm_service import call_llm, parse_llm_json as _parse_llm_json, LLMError
 
+
+# ─────────────────────────────────────────────────────────────────
+# Payload dictionaries for fuzz testing (unchanged)
+# ─────────────────────────────────────────────────────────────────
 
 PAYLOAD_CATEGORIES = {
     "sql_injection": [
@@ -20,7 +23,7 @@ PAYLOAD_CATEGORIES = {
         "<img src=x onerror=alert(1)>",
         "<svg/onload=alert(1)>",
         "javascript:alert(1)",
-        "\"><script>alert(1)</script>",
+        '"><script>alert(1)</script>',
     ],
     "path_traversal": [
         "../../etc/passwd",
@@ -29,30 +32,118 @@ PAYLOAD_CATEGORIES = {
         "%2e%2e%2f%2e%2e%2f%2e%2e%2fetc%2fpasswd",
         "....//....//....//etc/passwd",
     ],
-    "integer_overflow": [
-        "-1",
-        "0",
-        "9999999999",
-        "-9999999999",
-    ],
-    "null_byte": [
-        "%00",
-        "\x00",
-        "null",
-    ],
-    "ssti": [
-        "{{7*7}}",
-        "${7*7}",
-        "{{{{}}}}",
-        "<%= 7*7 %>",
-    ],
-    "auth_bypass": [
-        "admin",
-        "administrator",
-        "root",
-        "null",
-        "undefined",
-    ],
+    "integer_overflow": ["-1", "0", "9999999999", "-9999999999"],
+    "null_byte": ["%00", "\\x00", "null"],
+    "ssti": ["{{7*7}}", "${7*7}", "{{{{}}}}", "<%= 7*7 %>"],
+    "auth_bypass": ["admin", "administrator", "root", "null", "undefined"],
+}
+
+
+# ─────────────────────────────────────────────────────────────────
+# 4-Outcome Classification
+# ─────────────────────────────────────────────────────────────────
+# PASS              — test ran, result is expected and safe
+# SECURITY_FAILURE  — unexpected success on protected/invalid request
+# EXPECTED_FAILURE  — API responded correctly to a bad request
+# CONNECTION_ERROR  — could not reach the API at all
+# ─────────────────────────────────────────────────────────────────
+
+def classify_outcome(test_type: str, actual_status: int,
+                     response_body: str = "", payload: str = None):
+    """
+    Classify a test result into one of 4 outcomes.
+    Returns (outcome, expected_status_desc, note, evidence).
+    """
+    # HTTP 415 is always EXPECTED_FAILURE regardless of test type
+    if actual_status == 415:
+        return (
+            "EXPECTED_FAILURE", "4xx",
+            "Content-Type mismatch in test construction — not an API vulnerability.",
+            None,
+        )
+
+    if test_type == "valid_request":
+        if 200 <= actual_status < 300:
+            return ("PASS", "2xx", f"API responded with {actual_status} as expected.", None)
+        return (
+            "SECURITY_FAILURE", "2xx",
+            f"Expected 2xx for valid request, got {actual_status}.",
+            f"Unexpected {actual_status} on valid request",
+        )
+
+    if test_type == "invalid_parameter":
+        if actual_status in (400, 422, 415):
+            return ("EXPECTED_FAILURE", "400/422/415",
+                    f"API correctly rejected invalid parameter with {actual_status}.", None)
+        if 200 <= actual_status < 300:
+            return ("SECURITY_FAILURE", "400/422/415",
+                    f"API accepted invalid parameter with {actual_status}.",
+                    f"Invalid parameter accepted with status {actual_status}")
+        return ("EXPECTED_FAILURE", "400/422/415",
+                f"API responded with {actual_status} to invalid parameter.", None)
+
+    if test_type == "nonexistent_resource":
+        if actual_status == 404:
+            return ("EXPECTED_FAILURE", "404",
+                    "API correctly returned 404 for nonexistent resource.", None)
+        if 200 <= actual_status < 300:
+            return ("SECURITY_FAILURE", "404",
+                    f"API returned {actual_status} for nonexistent resource.",
+                    f"Nonexistent resource returned {actual_status}")
+        return ("EXPECTED_FAILURE", "404",
+                f"API responded with {actual_status} to nonexistent resource.", None)
+
+    if test_type == "wrong_method":
+        if actual_status == 405:
+            return ("EXPECTED_FAILURE", "405",
+                    "API correctly returned 405 for wrong HTTP method.", None)
+        if 200 <= actual_status < 300:
+            return ("SECURITY_FAILURE", "405",
+                    f"API accepted wrong HTTP method with {actual_status}.",
+                    f"Wrong method accepted with status {actual_status}")
+        return ("EXPECTED_FAILURE", "405",
+                f"API responded with {actual_status} to wrong HTTP method.", None)
+
+    if test_type == "fuzz_testing":
+        if 400 <= actual_status < 500:
+            return ("EXPECTED_FAILURE", "4xx",
+                    f"API correctly rejected fuzz payload with {actual_status}.", None)
+        if 200 <= actual_status < 300:
+            body_lower = (response_body or "").lower()
+            evidence_parts = []
+            if payload and payload.lower() in body_lower:
+                evidence_parts.append("Reflected payload in response")
+            if any(kw in body_lower for kw in
+                   ["traceback", "stack trace", "exception", "error at line"]):
+                evidence_parts.append("Stack trace detected in response")
+            if evidence_parts:
+                return ("SECURITY_FAILURE", "4xx",
+                        f"Fuzz payload accepted with {actual_status}.",
+                        "; ".join(evidence_parts))
+            return ("EXPECTED_FAILURE", "4xx",
+                    f"API returned {actual_status} but no evidence of exploitation.", None)
+        if actual_status >= 500:
+            return ("SECURITY_FAILURE", "4xx",
+                    f"Server error {actual_status} triggered by fuzz payload.",
+                    f"Server crash on fuzz input (status {actual_status})")
+        return ("EXPECTED_FAILURE", "4xx",
+                f"API responded with {actual_status} to fuzz payload.", None)
+
+    # Default for unknown / llm_generated test types
+    if 200 <= actual_status < 300:
+        return ("PASS", "N/A", f"API responded with {actual_status}.", None)
+    if 400 <= actual_status < 500:
+        return ("EXPECTED_FAILURE", "N/A", f"API responded with {actual_status}.", None)
+    return ("EXPECTED_FAILURE", "N/A", f"API responded with {actual_status}.", None)
+
+
+# Map LLM test-case categories to plan test_types
+_CATEGORY_TO_TYPE = {
+    "positive": "valid_request",
+    "negative": "invalid_parameter",
+    "edge_case": "invalid_parameter",
+    "security": "fuzz_testing",
+    "fallback": "valid_request",
 }
 
 
@@ -62,22 +153,101 @@ class APITestingAgent:
         self.base_url = base_url or "http://localhost:8001"
         self.timeout = 5
 
-    def _interpret_500_response(
-        self,
-        path: str,
-        method: str,
-        payload: str,
-        status_code: int,
-        response_text: str,
-        response_headers: dict,
-    ) -> bool | None:
-        """Use LLM to determine if a 500 response is a real vulnerability or benign."""
+    # ── Low-level HTTP ────────────────────────────────────────────
+
+    def _make_request(self, method: str, url: str,
+                      headers: dict = None, json_body=None) -> dict:
+        """Make an HTTP request and return raw response data."""
+        try:
+            kwargs = {"method": method.upper(), "url": url, "timeout": self.timeout}
+            if headers:
+                kwargs["headers"] = headers
+            if json_body and method.upper() in ("POST", "PUT", "PATCH"):
+                kwargs["json"] = json_body
+            start = time.time()
+            r = requests.request(**kwargs)
+            elapsed = (time.time() - start) * 1000
+            return {
+                "status_code": r.status_code,
+                "response_body": r.text[:2000] if r.text else "",
+                "response_headers": dict(r.headers),
+                "response_time_ms": round(elapsed, 2),
+                "connection_error": False,
+                "error": None,
+            }
+        except requests.exceptions.ConnectionError:
+            return {"status_code": None, "response_body": "",
+                    "response_headers": {}, "response_time_ms": None,
+                    "connection_error": True, "error": "connection refused"}
+        except requests.exceptions.Timeout:
+            return {"status_code": None, "response_body": "",
+                    "response_headers": {}, "response_time_ms": None,
+                    "connection_error": True, "error": "timeout"}
+        except Exception as e:
+            return {"status_code": None, "response_body": "",
+                    "response_headers": {}, "response_time_ms": None,
+                    "connection_error": False, "error": str(e)}
+
+    def _check_connectivity(self) -> tuple:
+        """Check if target API is reachable."""
+        try:
+            r = requests.get(self.base_url, timeout=self.timeout)
+            return True, f"reachable (status {r.status_code})"
+        except requests.exceptions.ConnectionError:
+            return False, "connection refused"
+        except requests.exceptions.Timeout:
+            return False, "connection timeout"
+        except Exception as e:
+            return False, str(e)
+
+    # ── Classified test runner ────────────────────────────────────
+
+    def _run_classified_test(self, test_type: str, method: str,
+                             url: str, payload: str = None) -> dict:
+        """Run a single HTTP test and classify its outcome."""
+        resp = self._make_request(method, url)
+
+        if resp["connection_error"]:
+            return {
+                "test_type": test_type,
+                "outcome": "CONNECTION_ERROR",
+                "expected_status": None,
+                "actual_status": None,
+                "note": f"Connection error: {resp['error']}",
+                "evidence": None,
+                "response_time_ms": None,
+            }
+
+        outcome, expected, note, evidence = classify_outcome(
+            test_type, resp["status_code"], resp["response_body"], payload
+        )
+
+        result = {
+            "test_type": test_type,
+            "outcome": outcome,
+            "expected_status": expected,
+            "actual_status": resp["status_code"],
+            "note": note,
+            "evidence": evidence,
+            "response_time_ms": resp["response_time_ms"],
+        }
+        # Keep raw data for fuzz tests (needed by 500-interpreter)
+        if test_type == "fuzz_testing":
+            result["response_body"] = resp["response_body"][:500]
+            result["response_headers"] = resp["response_headers"]
+        return result
+
+    # ── LLM helpers (kept for optional enrichment) ────────────────
+
+    def _interpret_500_response(self, path, method, payload,
+                                status_code, response_text,
+                                response_headers) -> bool | None:
+        """Use LLM to determine if a 500 response is a real vulnerability."""
         system_prompt = (
             "You are an expert API security analyst.\n"
             "Determine whether an HTTP 500 response indicates a real security vulnerability.\n"
             "Respond ONLY in valid JSON."
         )
-
         user_prompt = f"""Analyze this HTTP 500 response.
 
 Endpoint: {method} {path}
@@ -98,109 +268,26 @@ Prefer false (benign) if uncertain. Respond ONLY with JSON."""
             ])
         except LLMError as e:
             print(f"[APITestingAgent] LLM Error: {e}")
-            raw = None
-
-        if raw is None:
             return None
+
         parsed = _parse_llm_json(raw, fallback=None)
         return parsed.get("real_vulnerability", None) if parsed else None
-
-    def _mini_evaluator(self, test_name: str, method: str, path: str,
-                         actual_status: int, actual_body: str,
-                         actual_headers: dict, expected_logic: str) -> dict:
-        """
-        Mini-Evaluator: Use LLM to compare actual response against expected_logic.
-        Returns {passed: bool, reason: str, assertion_matched: bool}
-        """
-        system_prompt = (
-            "You are an expert API test evaluator.\n"
-            "Given a test case and actual response, determine if the test PASSED or FAILED.\n"
-            "Respond ONLY in valid JSON."
-        )
-
-        user_prompt = f"""Evaluate this API test result:
-
-Test Name: {test_name}
-Method: {method}
-Path: {path}
-Expected Logic: {expected_logic}
-
-Actual HTTP Status: {actual_status}
-Actual Response Body (1000 chars): {actual_body[:1000]}
-Actual Response Headers: {dict(actual_headers)}
-
-Rules:
-- Evaluate expected_logic as a Python-like predicate where you substitute actual values
-- Examples: "status_code == 200" means pass if status is 200
-- Examples: "'id' in response" means pass if 'id' appears in body
-- Examples: "status_code in [401, 403]" means pass if status is 401 or 403
-- Be strict: a test PASSES only if the expected_logic is clearly satisfied
-- If expected_logic is ambiguous, evaluate conservatively
-
-Respond ONLY with this exact JSON (no markdown, no explanation):
-{{
-  "passed": true or false,
-  "assertion_matched": true or false,
-  "reason": "2-3 sentence explanation of why this passed or failed"
-}}
-
-Respond ONLY with the JSON object."""
-
-        try:
-            raw = call_llm([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
-        except LLMError as e:
-            print(f"[APITestingAgent] LLM Error: {e}")
-            raw = None
-
-        if raw is None:
-            # Fallback: LLM unavailable — use simple heuristic
-            try:
-                assertion_matched = self._heuristic_check(expected_logic, actual_status, actual_body)
-                return {
-                    "passed": assertion_matched,
-                    "assertion_matched": assertion_matched,
-                    "reason": "LMMM unavailable, used heuristic fallback"
-                }
-            except Exception:
-                return {
-                    "passed": actual_status < 400,
-                    "assertion_matched": actual_status < 400,
-                    "reason": "LMMM unavailable, defaulted to status < 400"
-                }
-
-        parsed = _parse_llm_json(raw, fallback=None)
-        if not parsed:
-            return {
-                "passed": actual_status < 400,
-                "assertion_matched": actual_status < 400,
-                "reason": "Parse failed, defaulted to status < 400"
-            }
-
-        return {
-            "passed": bool(parsed.get("passed", actual_status < 400)),
-            "assertion_matched": bool(parsed.get("assertion_matched", actual_status < 400)),
-            "reason": str(parsed.get("reason", ""))
-        }
 
     def _heuristic_check(self, expected_logic: str, status: int, body: str) -> bool:
         """Simple fallback when LLM is unavailable."""
         logic_lower = expected_logic.lower()
-        if "status_code ==" in logic_lower or "status_code ==" in logic_lower:
+        if "status_code ==" in logic_lower:
             parts = logic_lower.split("==")
             if len(parts) == 2:
-                expected_val = parts[1].strip().strip("'\"")
                 try:
-                    return status == int(expected_val)
+                    return status == int(parts[1].strip().strip("'\""))
                 except ValueError:
                     pass
         if "status_code in" in logic_lower:
             try:
                 start = logic_lower.index("[")
                 end = logic_lower.index("]") + 1
-                vals = eval(logic_lower[start:end])
+                vals = json.loads(logic_lower[start:end])
                 return status in vals
             except Exception:
                 pass
@@ -210,30 +297,23 @@ Respond ONLY with the JSON object."""
             return status in [401, 403]
         return status < 400
 
-    def _check_connectivity(self) -> tuple[bool, str]:
-        """Check if target API is reachable."""
-        try:
-            r = requests.get(self.base_url, timeout=self.timeout)
-            return True, f"reachable (status {r.status_code})"
-        except requests.exceptions.ConnectionError:
-            return False, "connection refused"
-        except requests.exceptions.Timeout:
-            return False, "connection timeout"
-        except Exception as e:
-            return False, str(e)
+    # ── Payloads ──────────────────────────────────────────────────
 
-    def _get_payloads_for_endpoint(self, path: str, planner_fuzz_cats: list = None) -> list:
+    def _get_payloads_for_endpoint(self, path: str,
+                                   planner_fuzz_cats: list = None) -> list:
         """Return payloads relevant to this endpoint."""
         if planner_fuzz_cats:
             cats = planner_fuzz_cats
         else:
             cats = []
             path_lower = path.lower()
-            if any(k in path_lower for k in ["user", "account", "order", "profile", "id"]):
+            if any(k in path_lower for k in
+                   ["user", "account", "order", "profile", "id"]):
                 cats.extend(["sql_injection", "auth_bypass"])
             if any(k in path_lower for k in ["search", "query", "filter"]):
                 cats.extend(["sql_injection", "xss"])
-            if any(k in path_lower for k in ["file", "upload", "download", "doc", "image"]):
+            if any(k in path_lower for k in
+                   ["file", "upload", "download", "doc", "image"]):
                 cats.extend(["path_traversal"])
             if not cats:
                 cats = ["sql_injection", "xss", "path_traversal", "ssti"]
@@ -244,17 +324,190 @@ Respond ONLY with the JSON object."""
                 payloads.extend(PAYLOAD_CATEGORIES[cat])
         return list(dict.fromkeys(payloads))
 
+    # ── BOLA Validation ──────────────────────────────────────────
+
+    def _run_bola_validation(self, endpoint_path: str,
+                             method: str) -> dict:
+        """
+        BOLA validation: compare ID=1 vs ID=2 without auth.
+        Returns a single test result dict.
+        """
+        baseline_path = re.sub(r"\{.*?\}", "1", endpoint_path)
+        tampered_path = re.sub(r"\{.*?\}", "2", endpoint_path)
+        baseline_url = self.base_url.rstrip("/") + baseline_path
+        tampered_url = self.base_url.rstrip("/") + tampered_path
+
+        baseline = self._make_request(method, baseline_url)
+        if baseline["connection_error"]:
+            return {
+                "test_type": "bola_validation",
+                "outcome": "CONNECTION_ERROR",
+                "expected_status": "403/404 on tampered",
+                "actual_status": None,
+                "note": f"Connection error on baseline: {baseline['error']}",
+                "evidence": None,
+                "bola_baseline_status": None,
+                "bola_tampered_status": None,
+                "bola_response_differs": None,
+            }
+
+        tampered = self._make_request(method, tampered_url)
+        if tampered["connection_error"]:
+            return {
+                "test_type": "bola_validation",
+                "outcome": "CONNECTION_ERROR",
+                "expected_status": "403/404 on tampered",
+                "actual_status": None,
+                "note": f"Connection error on tampered: {tampered['error']}",
+                "evidence": None,
+                "bola_baseline_status": baseline["status_code"],
+                "bola_tampered_status": None,
+                "bola_response_differs": None,
+            }
+
+        b_status = baseline["status_code"]
+        t_status = tampered["status_code"]
+        bodies_differ = baseline["response_body"] != tampered["response_body"]
+
+        if t_status in (403, 404):
+            outcome, note, evidence = (
+                "EXPECTED_FAILURE",
+                f"Auth protected correctly — tampered request returned {t_status}.",
+                None,
+            )
+        elif b_status == 200 and t_status == 200 and bodies_differ:
+            outcome, note, evidence = (
+                "SECURITY_FAILURE",
+                "Endpoint returned different 200 responses for ID=1 and ID=2 without auth.",
+                "Endpoint returned different 200 responses for ID=1 and ID=2 without auth",
+            )
+        elif b_status == 200 and t_status == 200:
+            outcome, note, evidence = (
+                "EXPECTED_FAILURE",
+                "Both requests returned identical 200 — likely static/default resource.",
+                None,
+            )
+        else:
+            outcome, note, evidence = (
+                "EXPECTED_FAILURE",
+                f"Baseline={b_status}, tampered={t_status}.",
+                None,
+            )
+
+        return {
+            "test_type": "bola_validation",
+            "outcome": outcome,
+            "expected_status": "403/404 on tampered",
+            "actual_status": t_status,
+            "note": note,
+            "evidence": evidence,
+            "bola_baseline_status": b_status,
+            "bola_tampered_status": t_status,
+            "bola_response_differs": bodies_differ,
+        }
+
+    # ── Auth Bypass Validation ────────────────────────────────────
+
+    def _run_auth_bypass_validation(self, endpoint_path: str,
+                                    method: str) -> list:
+        """
+        Auth bypass validation: 3 variants (no_token, invalid_token, none_algorithm_jwt).
+        Returns a list of test result dicts.
+        """
+        test_path = re.sub(r"\{.*?\}", "1", endpoint_path)
+        url = self.base_url.rstrip("/") + test_path
+
+        variants = [
+            ("no_token", {}, "Request without any authorization"),
+            ("invalid_token",
+             {"Authorization": "Bearer INVALID_TOKEN_SENTINEL_12345"},
+             "Request with invalid bearer token"),
+            ("none_algorithm_jwt",
+             {"Authorization": "Bearer eyJhbGciOiJub25lIn0.eyJzdWIiOiJhdHRhY2tlciJ9."},
+             "Request with none-algorithm JWT"),
+        ]
+
+        results = []
+        for variant_name, headers, description in variants:
+            resp = self._make_request(method, url, headers=headers)
+
+            if resp["connection_error"]:
+                results.append({
+                    "test_type": "auth_bypass_validation",
+                    "auth_test_variant": variant_name,
+                    "outcome": "CONNECTION_ERROR",
+                    "expected_status": "401/403",
+                    "actual_status": None,
+                    "note": f"Connection error: {resp['error']}",
+                    "evidence": None,
+                    "auth_bypass_detected": False,
+                })
+                continue
+
+            status = resp["status_code"]
+            if 200 <= status < 300:
+                sev = ""
+                if variant_name == "none_algorithm_jwt":
+                    sev = " (CRITICAL — accepts unsigned JWT)"
+                results.append({
+                    "test_type": "auth_bypass_validation",
+                    "auth_test_variant": variant_name,
+                    "outcome": "SECURITY_FAILURE",
+                    "expected_status": "401/403",
+                    "actual_status": status,
+                    "note": f"Auth bypass: {description} returned {status}{sev}.",
+                    "evidence": f"{description} returned {status}{sev}",
+                    "auth_bypass_detected": True,
+                })
+            else:
+                results.append({
+                    "test_type": "auth_bypass_validation",
+                    "auth_test_variant": variant_name,
+                    "outcome": "EXPECTED_FAILURE",
+                    "expected_status": "401/403",
+                    "actual_status": status,
+                    "note": f"Auth correctly blocked: {description} → {status}.",
+                    "evidence": None,
+                    "auth_bypass_detected": False,
+                })
+
+        return results
+
+    # ── Helpers for extracting flagged endpoints ──────────────────
+
+    def _get_bola_flagged_endpoints(self, security_result: dict) -> list:
+        """Extract (path, method) tuples flagged for BOLA."""
+        eps = set()
+        for f in security_result.get("findings", []):
+            vuln = (f.get("vulnerability") or "").lower()
+            if "bola" in vuln or "broken object" in vuln:
+                ep = f.get("endpoint", "")
+                if "{" in ep:
+                    eps.add((ep, f.get("method", "GET")))
+        return list(eps)
+
+    def _get_auth_flagged_endpoints(self, security_result: dict) -> list:
+        """Extract (path, method) tuples flagged for auth issues."""
+        eps = set()
+        for f in security_result.get("findings", []):
+            vuln = (f.get("vulnerability") or "").lower()
+            if "auth" in vuln or "authentication" in vuln:
+                eps.add((f.get("endpoint", ""), f.get("method", "GET")))
+        return list(eps)
+
+    # ── LLM test-case runner ──────────────────────────────────────
+
     def _run_llm_test_case(self, test_case: dict, base_url: str,
                            auth_config: dict = None) -> dict:
-        """
-        Execute a single LLM-generated test case using httpx and evaluate with Mini-Evaluator.
-        """
+        """Execute a single LLM-generated test case with 4-outcome classification."""
         name = test_case.get("name", "unnamed")
         method = test_case.get("method", "GET")
         path = test_case.get("path", "/")
         payload = test_case.get("payload")
-        headers = test_case.get("headers", {})
+        headers = dict(test_case.get("headers", {}))
         expected_logic = test_case.get("expected_logic", "")
+        category = test_case.get("category", "positive")
+        test_type = _CATEGORY_TO_TYPE.get(category, "valid_request")
 
         # Apply auth from scan config
         if auth_config:
@@ -268,176 +521,101 @@ Respond ONLY with the JSON object."""
                 headers["Authorization"] = f"Basic {base64.b64encode(creds.encode()).decode()}"
 
         url = base_url.rstrip("/") + path
+        json_body = payload if payload and method.upper() in ("POST", "PUT", "PATCH") else None
+        resp = self._make_request(method, url, headers=headers, json_body=json_body)
 
-        try:
-            start_time = time.time()
-            kwargs = {"method": method.upper(), "url": url, "headers": headers, "timeout": self.timeout}
-            if payload and method.upper() in ["POST", "PUT", "PATCH"]:
-                kwargs["json"] = payload
-
-            r = requests.request(**kwargs)
-            elapsed_ms = (time.time() - start_time) * 1000
-
-            status_code = r.status_code
-            response_body = r.text[:1000]
-            response_headers = dict(r.headers)
-            connection_error = False
-
-        except requests.exceptions.ConnectionError:
+        if resp["connection_error"]:
             return {
-                "test_name": name,
-                "test_type": "llm_generated",
-                "category": test_case.get("category", "unknown"),
-                "passed": False,
-                "connection_error": True,
-                "auth_used": bool(auth_config),
-                "status_code": None,
-                "response_time_ms": None,
-                "note": "connection refused — endpoint unreachable",
-                "assertion_matched": None,
-                "reason": "Target API is unreachable"
-            }
-        except requests.exceptions.Timeout:
-            return {
-                "test_name": name,
-                "test_type": "llm_generated",
-                "category": test_case.get("category", "unknown"),
-                "passed": False,
-                "connection_error": True,
-                "auth_used": bool(auth_config),
-                "status_code": None,
-                "response_time_ms": None,
-                "note": "request timed out",
-                "assertion_matched": None,
-                "reason": "Request timed out"
-            }
-        except Exception as e:
-            return {
-                "test_name": name,
-                "test_type": "llm_generated",
-                "category": test_case.get("category", "unknown"),
-                "passed": False,
-                "connection_error": False,
-                "auth_used": bool(auth_config),
-                "status_code": None,
-                "response_time_ms": None,
-                "note": str(e),
-                "assertion_matched": None,
-                "reason": f"Request error: {e}"
+                "test_name": name, "test_type": test_type, "category": category,
+                "outcome": "CONNECTION_ERROR",
+                "expected_status": None, "actual_status": None,
+                "note": f"Connection error: {resp['error']}",
+                "evidence": None,
+                "response_time_ms": None, "auth_used": bool(auth_config),
             }
 
-        # Mini-Evaluator: LLM compares actual response to expected_logic
-        evaluation = self._mini_evaluator(
-            test_name=name,
-            method=method,
-            path=path,
-            actual_status=status_code,
-            actual_body=response_body,
-            actual_headers=response_headers,
-            expected_logic=expected_logic
+        outcome, expected, note, evidence = classify_outcome(
+            test_type, resp["status_code"], resp["response_body"]
         )
 
         return {
-            "test_name": name,
-            "test_type": "llm_generated",
-            "category": test_case.get("category", "unknown"),
-            "passed": evaluation["passed"],
-            "connection_error": connection_error,
+            "test_name": name, "test_type": test_type, "category": category,
+            "outcome": outcome,
+            "expected_status": expected, "actual_status": resp["status_code"],
+            "note": note, "evidence": evidence,
+            "response_time_ms": resp["response_time_ms"],
             "auth_used": bool(auth_config),
-            "status_code": status_code,
-            "response_time_ms": round(elapsed_ms, 2) if elapsed_ms else None,
-            "note": evaluation["reason"],
-            "assertion_matched": evaluation["assertion_matched"],
-            "expected_logic": expected_logic,
-            "actual_body_preview": response_body[:200]
+            "actual_body_preview": resp["response_body"][:200],
         }
 
+    # ── Main run method ───────────────────────────────────────────
+
     def run(self, parsed_data: dict, planner_result: dict = None,
-            test_generation_result: dict = None, auth_config: dict = None) -> dict:
+            test_generation_result: dict = None, auth_config: dict = None,
+            security_result: dict = None) -> dict:
         """
-        Run API tests: LLM-generated test cases + fallback static tests.
+        Run API tests with 4-outcome classification.
+        Optionally runs BOLA and auth bypass validation when security_result is provided.
         """
         if "base_url" in parsed_data:
             self.base_url = parsed_data["base_url"]
 
-        # Step 1: Connectivity pre-check
+        # Connectivity pre-check
         reachable, reach_msg = self._check_connectivity()
+        empty_return = {
+            "agent": "api_testing", "status": "skipped",
+            "api_was_reachable": False, "base_url_tested": self.base_url,
+            "results": [], "skip_reason": f"API not reachable: {reach_msg}",
+            "security_failure_count": 0, "expected_failure_count": 0,
+            "pass_count": 0, "connection_error_count": 0,
+        }
         if not reachable:
-            return {
-                "agent": "api_testing",
-                "status": "skipped",
-                "api_was_reachable": False,
-                "base_url_tested": self.base_url,
-                "results": [],
-                "skip_reason": f"API not reachable: {reach_msg}"
-            }
+            return empty_return
 
-        # Collect LLM-generated test cases
+        all_tests = []   # flat list — used to compute counters
+        results = []     # grouped by endpoint — existing structure
+
+        # ── Phase 1: LLM-generated test cases ─────────────────────
         llm_test_cases = []
         if test_generation_result and test_generation_result.get("test_cases"):
             llm_test_cases = test_generation_result["test_cases"]
 
-        # If no LLM test cases (Ollama down → fallback), use default health checks
         if not llm_test_cases:
+            # Fallback health-check tests (no Ollama needed)
             llm_test_cases = [
-                {
-                    "name": "health_check",
-                    "method": "GET",
-                    "path": "/health",
-                    "payload": None,
-                    "headers": {},
-                    "expected_logic": "status_code == 200",
-                    "category": "fallback",
-                    "target_endpoint": "/health",
-                    "target_method": "GET"
-                },
-                {
-                    "name": "unauthorized_access_blocked",
-                    "method": "GET",
-                    "path": "/users/1",
-                    "payload": None,
-                    "headers": {},
-                    "expected_logic": "status_code in [401, 403] or 'id' not in response",
-                    "category": "fallback",
-                    "target_endpoint": "/users/{user_id}",
-                    "target_method": "GET"
-                }
+                {"name": "health_check", "method": "GET", "path": "/health",
+                 "payload": None, "headers": {}, "expected_logic": "status_code == 200",
+                 "category": "fallback", "target_endpoint": "/health",
+                 "target_method": "GET"},
+                {"name": "unauthorized_access_blocked", "method": "GET",
+                 "path": "/users/1", "payload": None, "headers": {},
+                 "expected_logic": "status_code in [401, 403]",
+                 "category": "fallback", "target_endpoint": "/users/{user_id}",
+                 "target_method": "GET"},
             ]
 
-        # Group test cases by their target_endpoint for results structure
+        # Group by target endpoint
         endpoint_groups = {}
         for tc in llm_test_cases:
-            key = (tc.get("target_endpoint", tc.get("path")), tc.get("target_method", tc.get("method")))
-            if key not in endpoint_groups:
-                endpoint_groups[key] = []
-            endpoint_groups[key].append(tc)
+            key = (tc.get("target_endpoint", tc.get("path")),
+                   tc.get("target_method", tc.get("method")))
+            endpoint_groups.setdefault(key, []).append(tc)
 
-        results = []
-        total_llm_tests = 0
-        passed_llm_tests = 0
+        for (ep_path, ep_method), tcs in endpoint_groups.items():
+            ep_result = {"endpoint": ep_path, "method": ep_method,
+                         "base_url": self.base_url, "tests": []}
+            for tc in tcs:
+                t = self._run_llm_test_case(tc, self.base_url, auth_config)
+                ep_result["tests"].append(t)
+                all_tests.append(t)
+            results.append(ep_result)
 
-        for (endpoint_path, method), test_cases in endpoint_groups.items():
-            endpoint_result = {
-                "endpoint": endpoint_path,
-                "method": method,
-                "base_url": self.base_url,
-                "tests": []
-            }
-
-            for tc in test_cases:
-                total_llm_tests += 1
-                test_outcome = self._run_llm_test_case(tc, self.base_url, auth_config)
-                endpoint_result["tests"].append(test_outcome)
-                if test_outcome["passed"]:
-                    passed_llm_tests += 1
-
-            results.append(endpoint_result)
-
-        # ── Static fallback tests (only when no LLM cases were generated) ──
+        # ── Phase 2: Static fallback tests ────────────────────────
         if not test_generation_result or not test_generation_result.get("llm_used"):
             planner_fuzz = None
             if planner_result and planner_result.get("plan"):
-                planner_fuzz = planner_result["plan"].get("suggested_fuzz_categories", {})
+                planner_fuzz = planner_result["plan"].get(
+                    "suggested_fuzz_categories", {})
 
             for ep in parsed_data.get("endpoints", []):
                 path = ep["path"]
@@ -445,88 +623,116 @@ Respond ONLY with the JSON object."""
                 test_path = re.sub(r"\{.*?\}", "1", path)
                 url = self.base_url + test_path
 
-                endpoint_result = {
-                    "endpoint": path,
-                    "method": method,
-                    "base_url": self.base_url,
-                    "tests": []
-                }
+                ep_result = {"endpoint": path, "method": method,
+                             "base_url": self.base_url, "tests": []}
 
-                # 1. Valid Request
-                result = self._run_static_test(method, url)
-                endpoint_result["tests"].append({"test": "valid_request", **result})
+                # valid_request
+                t = self._run_classified_test("valid_request", method, url)
+                ep_result["tests"].append(t)
+                all_tests.append(t)
 
-                # 2. Invalid Parameter
+                # invalid_parameter
                 if "{" in path:
-                    invalid_path = re.sub(r"\{.*?\}", "abc", path)
-                    result = self._run_static_test(method, self.base_url + invalid_path)
-                    endpoint_result["tests"].append({"test": "invalid_parameter", **result})
+                    inv_path = re.sub(r"\{.*?\}", "abc", path)
+                    t = self._run_classified_test(
+                        "invalid_parameter", method, self.base_url + inv_path)
+                    ep_result["tests"].append(t)
+                    all_tests.append(t)
 
-                # 3. Nonexistent Resource
+                # nonexistent_resource
                 if "{" in path:
-                    invalid_path = re.sub(r"\{.*?\}", "999999", path)
-                    result = self._run_static_test(method, self.base_url + invalid_path)
-                    endpoint_result["tests"].append({"test": "nonexistent_resource", **result})
+                    ne_path = re.sub(r"\{.*?\}", "999999", path)
+                    t = self._run_classified_test(
+                        "nonexistent_resource", method, self.base_url + ne_path)
+                    ep_result["tests"].append(t)
+                    all_tests.append(t)
 
-                # 4. Wrong HTTP Method
-                wrong_method = "POST" if method != "POST" else "GET"
-                result = self._run_static_test(wrong_method, url)
-                endpoint_result["tests"].append({"test": "wrong_method", **result})
+                # wrong_method
+                wrong = "POST" if method != "POST" else "GET"
+                t = self._run_classified_test("wrong_method", wrong, url)
+                ep_result["tests"].append(t)
+                all_tests.append(t)
 
-                # 5. Context-aware fuzz
+                # fuzz_testing
                 if "{" in path:
                     fuzz_cats = planner_fuzz.get(path) if planner_fuzz else None
                     payloads = self._get_payloads_for_endpoint(path, fuzz_cats)
-                    fuzz_results = []
 
                     for payload in payloads:
                         fuzz_path = path
                         for param in re.findall(r"\{(.*?)\}", path):
                             fuzz_path = fuzz_path.replace(f"{{{param}}}", payload)
                         fuzz_url = self.base_url + fuzz_path
-                        result = self._run_static_test(method, fuzz_url)
+                        t = self._run_classified_test(
+                            "fuzz_testing", method, fuzz_url, payload=payload)
 
-                        possible_vuln = False
-                        interpretation_note = None
-
-                        if result.get("status_code") and result["status_code"] >= 500:
+                        # Optional LLM refinement for 500s
+                        if (t["actual_status"] and t["actual_status"] >= 500
+                                and t["outcome"] == "SECURITY_FAILURE"):
                             llm_result = self._interpret_500_response(
                                 path=path, method=method, payload=payload,
-                                status_code=result["status_code"],
-                                response_text=result.get("response_body", ""),
-                                response_headers=result.get("response_headers", {})
+                                status_code=t["actual_status"],
+                                response_text=t.get("response_body", ""),
+                                response_headers=t.get("response_headers", {}),
                             )
-                            if llm_result is True:
-                                possible_vuln = True
-                                interpretation_note = "LLM confirmed: real vulnerability"
-                            elif llm_result is False:
-                                interpretation_note = "LLM confirmed: benign crash"
-                            else:
-                                possible_vuln = True
-                                interpretation_note = "LLM unavailable, flagged as potential"
-                        elif result.get("error") and not result.get("connection_error"):
-                            possible_vuln = True
-                            interpretation_note = "Non-connection error flagged as potential"
+                            if llm_result is False:
+                                t["outcome"] = "EXPECTED_FAILURE"
+                                t["note"] = (f"Server error {t['actual_status']} — "
+                                             "LLM assessed as benign.")
+                                t["evidence"] = None
 
-                        fuzz_results.append({
-                            "payload": payload,
-                            "url": fuzz_url,
-                            "status_code": result.get("status_code"),
-                            "error": result.get("error"),
-                            "possible_vulnerability": possible_vuln,
-                            "interpretation_note": interpretation_note,
-                        })
+                        ep_result["tests"].append(t)
+                        all_tests.append(t)
 
-                    vulnerable_count = len([f for f in fuzz_results if f["possible_vulnerability"]])
-                    endpoint_result["tests"].append({
-                        "test": "dynamic_fuzz_testing",
-                        "total_payloads": len(fuzz_results),
-                        "vulnerable_count": vulnerable_count,
-                        "passed": vulnerable_count == 0,
-                        "results": fuzz_results
+                results.append(ep_result)
+
+        # ── Phase 3: BOLA validation tests ────────────────────────
+        if security_result and reachable:
+            for ep_path, ep_method in self._get_bola_flagged_endpoints(
+                    security_result):
+                t = self._run_bola_validation(ep_path, ep_method)
+                # Attach to existing endpoint group or create new
+                attached = False
+                for r in results:
+                    if r["endpoint"] == ep_path and r["method"] == ep_method:
+                        r["tests"].append(t)
+                        attached = True
+                        break
+                if not attached:
+                    results.append({
+                        "endpoint": ep_path, "method": ep_method,
+                        "base_url": self.base_url, "tests": [t],
                     })
+                all_tests.append(t)
 
-                results.append(endpoint_result)
+        # ── Phase 4: Auth bypass validation tests ─────────────────
+        if security_result and reachable:
+            for ep_path, ep_method in self._get_auth_flagged_endpoints(
+                    security_result):
+                auth_tests = self._run_auth_bypass_validation(
+                    ep_path, ep_method)
+                attached = False
+                for r in results:
+                    if r["endpoint"] == ep_path and r["method"] == ep_method:
+                        r["tests"].extend(auth_tests)
+                        attached = True
+                        break
+                if not attached:
+                    results.append({
+                        "endpoint": ep_path, "method": ep_method,
+                        "base_url": self.base_url, "tests": auth_tests,
+                    })
+                all_tests.extend(auth_tests)
+
+        # ── Compute counters ──────────────────────────────────────
+        sec_fail = sum(1 for t in all_tests
+                       if t.get("outcome") == "SECURITY_FAILURE")
+        exp_fail = sum(1 for t in all_tests
+                       if t.get("outcome") == "EXPECTED_FAILURE")
+        passed = sum(1 for t in all_tests
+                     if t.get("outcome") == "PASS")
+        conn_err = sum(1 for t in all_tests
+                       if t.get("outcome") == "CONNECTION_ERROR")
 
         return {
             "agent": "api_testing",
@@ -535,34 +741,8 @@ Respond ONLY with the JSON object."""
             "base_url_tested": self.base_url,
             "auth_used": bool(auth_config),
             "results": results,
-            "llm_generated_tests_run": total_llm_tests,
-            "llm_generated_tests_passed": passed_llm_tests,
+            "security_failure_count": sec_fail,
+            "expected_failure_count": exp_fail,
+            "pass_count": passed,
+            "connection_error_count": conn_err,
         }
-
-    def _run_static_test(self, method: str, url: str, **kwargs):
-        """Make a request for static tests."""
-        try:
-            r = requests.request(method=method, url=url, timeout=self.timeout, **kwargs)
-            return {
-                "passed": r.status_code < 400,
-                "status_code": r.status_code,
-                "error": None,
-                "connection_error": False,
-                "response_body": r.text[:500] if r.text else "",
-                "response_headers": dict(r.headers),
-            }
-        except requests.exceptions.ConnectionError:
-            return {
-                "passed": False, "status_code": None, "error": "connection refused",
-                "connection_error": True, "response_body": "", "response_headers": {},
-            }
-        except requests.exceptions.Timeout:
-            return {
-                "passed": False, "status_code": None, "error": "timeout",
-                "connection_error": True, "response_body": "", "response_headers": {},
-            }
-        except Exception as e:
-            return {
-                "passed": False, "status_code": None, "error": str(e),
-                "connection_error": False, "response_body": "", "response_headers": {},
-            }

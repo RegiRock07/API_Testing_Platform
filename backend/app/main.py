@@ -1,11 +1,16 @@
 # backend/app/main.py
 
+import os
+from dotenv import load_dotenv
+
+# Load .env from the root of the project (parent of backend/)
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../.env'))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.endpoints import router
 from app.database import init_db
 from app.scheduler import init_scheduler, shutdown_scheduler
-import os
 
 app = FastAPI(
     title="API Sentinel",

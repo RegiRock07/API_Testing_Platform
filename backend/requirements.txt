@@ -10,3 +10,4 @@ passlib[bcrypt]
 apscheduler
 reportlab
 groq
+python-dotenv
