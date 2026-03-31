@@ -229,13 +229,13 @@ def log_agent_run(scan_id: str, agent_name: str, status: str, summary: str = "")
 
 def hash_password(plain: str) -> str:
     from passlib.context import CryptContext
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    pwd_ctx = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_ctx.hash(plain)
 
 
 def verify_password(plain: str, hashed: str) -> bool:
     from passlib.context import CryptContext
-    pwd_ctx = CryptContext(schemes=["bcrypt"], deprecated="auto")
+    pwd_ctx = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
     return pwd_ctx.verify(plain, hashed)
 
 

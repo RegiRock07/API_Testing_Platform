@@ -875,13 +875,17 @@ function ReportView({ report, comparisonResult, initialTab }) {
 
 export default function App() {
   // FIX #3: token state MUST be declared before useApi() so it can be passed in.
-  // In the original, token was declared after useApi() was called, meaning the
-  // hook would always receive undefined on first render.
-  const [token, setToken] = useState(null);
+  // Persist the current auth token and user to sessionStorage so reloads keep
+  // the session alive and unauthorized requests are not fired automatically.
+  const [token, setToken] = useState(() => sessionStorage.getItem("token") || null);
+  const [user, setUser] = useState(() => {
+    const stored = sessionStorage.getItem("user");
+    return stored ? JSON.parse(stored) : null;
+  });
 
   // FIX #2: Pass token into useApi so apiFetch includes the Authorization header.
   // The duplicate apiFetch declared inside App() below has been removed entirely.
-  const { apiKey, setApiKey, apiFetch, apiUpload } = useApi(token);
+  const { apiKey, apiFetch, apiUpload } = useApi(token);
 
   const [authChecked, setAuthChecked] = useState(false);
   const [needsAuth, setNeedsAuth] = useState(false);
@@ -903,7 +907,6 @@ export default function App() {
   const [error, setError] = useState("");
   const [sidebarKey, setSidebarKey] = useState(0);
   const [streamEvents, setStreamEvents] = useState([]);
-  const [user, setUser] = useState(null);
   // FIX #5: Removed unused `schedules` and `webhooks` state.
   const [comparisonResult, setComparisonResult] = useState(null);
   const [showLogin, setShowLogin] = useState(false);
@@ -1068,12 +1071,14 @@ export default function App() {
 
   if (!authChecked) return null;
 
-  if (!user && showLogin) {
-    return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); setShowLogin(false); }} />;
-  }
-
-  if (needsAuth && !apiKey) {
-    return <LoginScreen onLogin={(t, u) => { setToken(t); setUser(u); setShowLogin(false); }} />;
+  if ((!user && !apiKey) || needsAuth || showLogin) {
+    return <LoginScreen onLogin={(t, u) => {
+      setToken(t);
+      setUser(u);
+      sessionStorage.setItem("token", t);
+      sessionStorage.setItem("user", JSON.stringify(u));
+      setShowLogin(false);
+    }} />;
   }
 
   return (
@@ -1103,7 +1108,12 @@ export default function App() {
             {user ? (
               <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                 <span style={{ fontFamily: mono, fontSize: 13, color: C.textMuted }}>{user.email}</span>
-                <button onClick={() => { setUser(null); setToken(null); }} style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, background: "none", border: "none", cursor: "pointer" }}>
+                <button onClick={() => {
+                  setUser(null);
+                  setToken(null);
+                  sessionStorage.removeItem("token");
+                  sessionStorage.removeItem("user");
+                }} style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, background: "none", border: "none", cursor: "pointer" }}>
                   Logout
                 </button>
               </div>
