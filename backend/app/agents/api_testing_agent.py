@@ -151,13 +151,14 @@ class APITestingAgent:
 
     def __init__(self, base_url=None):
         self.base_url = base_url or "http://localhost:8001"
-        self.timeout = 5
+        self.timeout = 10
 
     # ── Low-level HTTP ────────────────────────────────────────────
 
     def _make_request(self, method: str, url: str,
                       headers: dict = None, json_body=None) -> dict:
         """Make an HTTP request and return raw response data."""
+        print(f"[APITestingAgent] Executing request: {method.upper()} {url}")
         try:
             kwargs = {"method": method.upper(), "url": url, "timeout": self.timeout}
             if headers:
@@ -190,6 +191,7 @@ class APITestingAgent:
 
     def _check_connectivity(self) -> tuple:
         """Check if target API is reachable."""
+        print(f"[APITestingAgent] Connectivity check directly hitting: {self.base_url}")
         try:
             r = requests.get(self.base_url, timeout=self.timeout)
             return True, f"reachable (status {r.status_code})"
@@ -562,15 +564,27 @@ Prefer false (benign) if uncertain. Respond ONLY with JSON."""
 
         # Connectivity pre-check
         reachable, reach_msg = self._check_connectivity()
-        empty_return = {
-            "agent": "api_testing", "status": "skipped",
-            "api_was_reachable": False, "base_url_tested": self.base_url,
-            "results": [], "skip_reason": f"API not reachable: {reach_msg}",
-            "security_failure_count": 0, "expected_failure_count": 0,
-            "pass_count": 0, "connection_error_count": 0,
-        }
         if not reachable:
-            return empty_return
+            skeleton_results = []
+            for ep in parsed_data.get("endpoints", []):
+                skeleton_results.append({
+                    "endpoint": ep.get("path"),
+                    "method": ep.get("method"),
+                    "tests": [{
+                        "test_type": "connectivity_check",
+                        "outcome": "CONNECTION_ERROR",
+                        "note": "API was unreachable — skipped all tests for this endpoint",
+                        "actual_status": None,
+                        "connection_error": True
+                    }]
+                })
+            return {
+                "agent": "api_testing", "status": "skipped",
+                "api_was_reachable": False, "base_url_tested": self.base_url,
+                "results": skeleton_results, "skip_reason": f"API not reachable: {reach_msg}",
+                "security_failure_count": 0, "expected_failure_count": 0,
+                "pass_count": 0, "connection_error_count": len(skeleton_results),
+            }
 
         all_tests = []   # flat list — used to compute counters
         results = []     # grouped by endpoint — existing structure

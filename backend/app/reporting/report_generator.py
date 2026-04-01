@@ -87,6 +87,7 @@ class ReportGenerator:
                 "deployment_status": deployment.get("status", "unknown"),
                 "deployment_security_score": deployment.get(
                     "security_score", "0/6"),
+                "deployment_checks_ran": deployment.get("status") not in ["unreachable", "unknown"],
                 "overall_risk_score": overall_risk_score,
                 "api_was_reachable": api.get("api_was_reachable", False),
                 "deep_scan_performed": deep_scan.get(
@@ -199,23 +200,25 @@ class ReportGenerator:
                 vuln = f.get("vulnerability", "unknown")
                 immediate.append(f"Fix {vuln} on {method} {ep}")
 
-        # Short term: HIGH severity STATIC — group by vuln type
-        high_static = [f for f in correlated
-                       if f.get("severity") == "HIGH"
-                       and f.get("detection_type") == "STATIC"
-                       and not f.get("confirmed")]
+        # Short term: MEDIUM severity unconfirmed — group by vuln type
+        medium_unconfirmed = [f for f in correlated
+                              if f.get("severity") == "MEDIUM"
+                              and not f.get("confirmed")]
         vuln_groups = {}
-        for f in high_static:
+        for f in medium_unconfirmed:
             vuln = f.get("vulnerability", "unknown")
-            vuln_groups.setdefault(vuln, []).append(
-                f"{f.get('method', '')} {f.get('endpoint', '')}")
-        for vuln, eps in vuln_groups.items():
+            ep = f.get("endpoint", "unknown")
+            if ep not in vuln_groups.setdefault(vuln, []):
+                vuln_groups[vuln].append(ep)
+
+        sorted_groups = sorted(vuln_groups.items(), key=lambda x: len(x[1]), reverse=True)
+        for vuln, eps in sorted_groups[:3]:
             if len(eps) <= 3:
                 short_term.append(
-                    f"Investigate potential {vuln} on {', '.join(eps)}")
+                    f"Investigate {vuln} across {', '.join(eps)}")
             else:
                 short_term.append(
-                    f"Investigate potential {vuln} on {', '.join(eps[:3])} "
+                    f"Investigate {vuln} across {', '.join(eps[:3])} "
                     f"and {len(eps) - 3} more")
 
         # Long term: 3+ same vuln type at MEDIUM/LOW
@@ -233,7 +236,7 @@ class ReportGenerator:
         if not immediate:
             immediate.append("No confirmed or critical vulnerabilities requiring immediate action.")
         if not short_term:
-            short_term.append("Review static analysis findings for false positives.")
+            short_term.append("No short-term actions identified — all findings are low severity.")
         if not long_term:
             long_term.append("Conduct periodic full penetration testing.")
 

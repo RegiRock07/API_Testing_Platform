@@ -363,18 +363,36 @@ class SecurityAgent:
     @staticmethod
     def _deduplicate(findings: list) -> list:
         """
-        Dedup key: (endpoint, method, vulnerability_type).
-        Keep the finding with higher confidence.
+        Graduated deduplication: path-level for BOLA/Auth/Inventory, method-level otherwise.
+        Keep the finding with higher confidence and track affected_methods.
         """
         best = {}
         for f in findings:
-            key = (f.get("endpoint"), f.get("method"), f.get("vulnerability"))
+            ep = f.get("endpoint")
+            method = f.get("method")
+            vuln = f.get("vulnerability")
+            vuln_lower = (vuln or "").lower()
+
+            is_path_level = False
+            if "bola" in vuln_lower or "missing authentication" in vuln_lower or "inventory" in vuln_lower:
+                is_path_level = True
+
+            if is_path_level:
+                key = (ep, None, vuln)
+            else:
+                key = (ep, method, vuln)
+
             existing = best.get(key)
             if existing is None:
+                f["affected_methods"] = [method] if method and method != "MULTIPLE" else []
                 best[key] = f
             else:
+                if method and method != "MULTIPLE" and method not in existing.get("affected_methods", []):
+                    existing.setdefault("affected_methods", []).append(method)
+
                 if _SEVERITY_ORDER.get(f.get("confidence", "LOW"), 0) > \
                    _SEVERITY_ORDER.get(existing.get("confidence", "LOW"), 0):
+                    f["affected_methods"] = existing.get("affected_methods", [])
                     best[key] = f
         return list(best.values())
 

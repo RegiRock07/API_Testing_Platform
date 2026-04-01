@@ -85,8 +85,14 @@ def security_node(state: ScanState) -> ScanState:
 # ─────────────────────────────────────────
 
 def api_testing_node(state: ScanState) -> ScanState:
+    parsed_data = state.get("parsed_data", {}).copy()
+    if "base_url" not in parsed_data:
+        servers = parsed_data.get("servers", [])
+        if servers and isinstance(servers, list) and servers[0].get("url"):
+            parsed_data["base_url"] = servers[0]["url"]
+
     result = APITestingAgent().run(
-        state["parsed_data"],
+        parsed_data,
         planner_result=state.get("planner_result", {}),
         test_generation_result=state.get("test_generation_result", {}),
         auth_config=state.get("auth_config", {}),

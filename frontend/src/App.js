@@ -111,7 +111,7 @@ function Pill({ label, color }) {
   );
 }
 
-function StatCard({ label, value, color }) {
+function StatCard({ label, value, color, subtext }) {
   return (
     <div style={{
       background: C.surfaceHigh, border: `1px solid ${C.border}`,
@@ -120,6 +120,7 @@ function StatCard({ label, value, color }) {
     }}>
       <div style={{ fontFamily: mono, fontSize: 24, color, fontWeight: 700 }}>{value ?? "—"}</div>
       <div style={{ fontFamily: mono, fontSize: 10, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 2 }}>{label}</div>
+      {subtext && <div style={{ fontFamily: mono, fontSize: 10, color: C.textDim, marginTop: 4 }}>{subtext}</div>}
     </div>
   );
 }
@@ -583,26 +584,25 @@ function TestResults({ results = [], apiWasReachable }) {
     return <p style={{ fontFamily: mono, color: C.textMuted, fontSize: 12 }}>No test results.</p>;
   }
 
-  if (!apiWasReachable) {
-    return (
-      <div style={{
-        background: C.surfaceHigh, border: `1px solid ${C.border}`,
-        borderRadius: 6, padding: "16px 20px", textAlign: "center",
-      }}>
-        <div style={{ fontFamily: mono, fontSize: 12, color: C.textMuted, marginBottom: 8 }}>
-          ⚠ API was not reachable — tests skipped
-        </div>
-        <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted }}>
-          Connection errors are not counted as security failures.
-        </div>
-      </div>
-    );
-  }
-
   const outcomeColor = (o) => o === "PASS" ? C.green : o === "SECURITY_FAILURE" ? C.red : o === "EXPECTED_FAILURE" ? C.textMuted : C.textMuted;
   const outcomeLabel = (o) => o === "PASS" ? "PASS" : o === "SECURITY_FAILURE" ? "SECURITY FAIL" : o === "EXPECTED_FAILURE" ? "EXPECTED" : o === "CONNECTION_ERROR" ? "UNREACHABLE" : "—";
 
-  return results.map((ep, i) => {
+  return (
+    <div>
+      {!apiWasReachable && (
+        <div style={{
+          background: C.yellowDim, border: `1px solid ${C.yellow}44`,
+          borderRadius: 6, padding: "12px 16px", marginBottom: 16,
+        }}>
+          <div style={{ fontFamily: mono, fontSize: 12, color: C.yellow, fontWeight: 600 }}>
+            ⚠ API was unreachable during testing.
+          </div>
+          <div style={{ fontFamily: sans, fontSize: 13, color: C.textDim, marginTop: 4 }}>
+            The endpoints below were identified from the spec but could not be tested. Provide a live base URL to enable active testing.
+          </div>
+        </div>
+      )}
+      {results.map((ep, i) => {
     const tests = ep.tests || [];
     const secFails = tests.filter(t => t.outcome === "SECURITY_FAILURE").length;
     const passes = tests.filter(t => t.outcome === "PASS").length;
@@ -651,7 +651,9 @@ function TestResults({ results = [], apiWasReachable }) {
         )}
       </div>
     );
-  });
+  })}
+    </div>
+  );
 }
 
 // ─── Report viewer ───────────────────────────────────────────────
@@ -690,7 +692,17 @@ function ReportView({ report, comparisonResult, initialTab, token, scanId }) {
         <StatCard label="Expected Behavior" value={s.expected_failure_count ?? 0} color={C.textMuted} />
         <StatCard label="Passed" value={s.pass_count ?? s.passed_tests ?? 0} color={C.green} />
         <StatCard label="Total Findings" value={s.total_security_findings} color={C.yellow} />
-        <StatCard label="Security Score" value={s.security_score || s.deployment_security_score || "—"} color={C.accent} />
+        {(() => {
+          const unreachable = s.deployment_checks_ran === false || s.deployment_status === "unreachable";
+          return (
+            <StatCard 
+              label="SECURITY SCORE" 
+              value={unreachable ? "N/A" : (s.deployment_security_score || "—")} 
+              color={unreachable ? C.textMuted : C.accent} 
+              subtext={unreachable ? "deployment unreachable" : null}
+            />
+          );
+        })()}
         <div style={{
           background: C.surfaceHigh, border: `1px solid ${C.border}`,
           borderLeft: `3px solid ${s.deployment_status === "healthy" ? C.green : C.red}`,
@@ -1496,112 +1508,112 @@ export default function App() {
           {page === "scan" && (
             <>
 
-          {/* Error */}
-          {error && (
-            <div style={{
-              background: C.redDim, border: `1px solid ${C.red}44`,
-              borderRadius: 5, padding: "10px 14px",
-              fontFamily: mono, fontSize: 12, color: C.red, marginBottom: 18,
-            }}>✕ {error}</div>
-          )}
-
-          {/* Agent progress */}
-          {loading && streamEvents.length > 0 && <AgentProgress events={streamEvents} />}
-
-          {/* Input panels */}
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
-
-            {/* Paste JSON */}
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
-              <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Paste OpenAPI JSON
-              </div>
-              <div style={{ padding: 14 }}>
-                <textarea rows={6} value={specText} onChange={e => setSpecText(e.target.value)}
-                  placeholder={'{\n  "openapi": "3.0.0",\n  ...\n}'}
-                  style={{
-                    fontFamily: mono, fontSize: 11, background: C.bg, color: C.text,
-                    border: `1px solid ${C.border}`, borderRadius: 4, padding: 10,
-                    width: "100%", resize: "vertical", outline: "none",
-                    boxSizing: "border-box", marginBottom: 10,
-                  }} />
-                <Btn onClick={uploadSpec} disabled={loading || !specText}>Upload JSON</Btn>
-              </div>
-            </div>
-
-            {/* Upload file */}
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
-              <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Upload File
-              </div>
-              <div style={{ padding: 14 }}>
+              {/* Error */}
+              {error && (
                 <div style={{
-                  border: `1px dashed ${C.border}`, borderRadius: 5,
-                  padding: "28px 14px", textAlign: "center", marginBottom: 10,
-                }}>
-                  <input type="file" accept=".json,.yaml,.yml"
-                    onChange={e => setFile(e.target.files[0])}
-                    style={{ display: "none" }} id="fup" />
-                  <label htmlFor="fup" style={{ fontFamily: mono, fontSize: 11, color: C.accent, cursor: "pointer" }}>
-                    {file ? file.name : "Click to select .json / .yaml"}
-                  </label>
+                  background: C.redDim, border: `1px solid ${C.red}44`,
+                  borderRadius: 5, padding: "10px 14px",
+                  fontFamily: mono, fontSize: 12, color: C.red, marginBottom: 18,
+                }}>✕ {error}</div>
+              )}
+
+              {/* Agent progress */}
+              {loading && streamEvents.length > 0 && <AgentProgress events={streamEvents} />}
+
+              {/* Input panels */}
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
+
+                {/* Paste JSON */}
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+                  <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                    Paste OpenAPI JSON
+                  </div>
+                  <div style={{ padding: 14 }}>
+                    <textarea rows={6} value={specText} onChange={e => setSpecText(e.target.value)}
+                      placeholder={'{\n  "openapi": "3.0.0",\n  ...\n}'}
+                      style={{
+                        fontFamily: mono, fontSize: 11, background: C.bg, color: C.text,
+                        border: `1px solid ${C.border}`, borderRadius: 4, padding: 10,
+                        width: "100%", resize: "vertical", outline: "none",
+                        boxSizing: "border-box", marginBottom: 10,
+                      }} />
+                    <Btn onClick={uploadSpec} disabled={loading || !specText}>Upload JSON</Btn>
+                  </div>
                 </div>
-                <Btn onClick={uploadFile} disabled={loading || !file}>Upload File</Btn>
-              </div>
-            </div>
 
-            {/* Scan URL */}
-            <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
-              <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
-                Scan API URL
-              </div>
-              <div style={{ padding: 14 }}>
-                <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)}
-                  placeholder="https://api.yourcompany.com" style={{ marginBottom: 10 }} />
-                <Btn onClick={scanUrl} disabled={loading || !apiUrl}>Scan URL</Btn>
-              </div>
-            </div>
+                {/* Upload file */}
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+                  <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                    Upload File
+                  </div>
+                  <div style={{ padding: 14 }}>
+                    <div style={{
+                      border: `1px dashed ${C.border}`, borderRadius: 5,
+                      padding: "28px 14px", textAlign: "center", marginBottom: 10,
+                    }}>
+                      <input type="file" accept=".json,.yaml,.yml"
+                        onChange={e => setFile(e.target.files[0])}
+                        style={{ display: "none" }} id="fup" />
+                      <label htmlFor="fup" style={{ fontFamily: mono, fontSize: 11, color: C.accent, cursor: "pointer" }}>
+                        {file ? file.name : "Click to select .json / .yaml"}
+                      </label>
+                    </div>
+                    <Btn onClick={uploadFile} disabled={loading || !file}>Upload File</Btn>
+                  </div>
+                </div>
 
-          </div>
+                {/* Scan URL */}
+                <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 7, overflow: "hidden" }}>
+                  <div style={{ padding: "10px 14px", borderBottom: `1px solid ${C.border}`, fontFamily: mono, fontSize: 10, color: C.accent, textTransform: "uppercase", letterSpacing: "0.08em" }}>
+                    Scan API URL
+                  </div>
+                  <div style={{ padding: 14 }}>
+                    <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)}
+                      placeholder="https://api.yourcompany.com" style={{ marginBottom: 10 }} />
+                    <Btn onClick={scanUrl} disabled={loading || !apiUrl}>Scan URL</Btn>
+                  </div>
+                </div>
 
-          {/* Run scan banner */}
-          {specId && !report && (
-            <div style={{
-              background: C.accentDim, border: `1px solid ${C.accentBorder}`,
-              borderRadius: 6, padding: "12px 18px",
-              display: "flex", alignItems: "center", justifyContent: "space-between",
-              marginBottom: 20, fontFamily: mono, fontSize: 12,
-            }}>
-              <span style={{ color: C.accent }}>
-                Spec uploaded — ID: <code>{specId}</code>
-              </span>
-              <div style={{ display: "flex", gap: 10 }}>
-                <Btn onClick={runScanStream} disabled={loading}>▶ Run Security Scan</Btn>
-                <Btn onClick={verifyFix} disabled={loading}>Verify Fix</Btn>
               </div>
-            </div>
-          )}
 
-          {/* FIX #4: Pass activeTab2 as initialTab so handleCompare can switch tabs */}
-          {report && (
-            <ReportView
-              report={report}
-              comparisonResult={comparisonResult}
-              initialTab={activeTab2}
-              token={token}
-              scanId={activeScanId}
-            />
-          )}
+              {/* Run scan banner */}
+              {specId && !report && (
+                <div style={{
+                  background: C.accentDim, border: `1px solid ${C.accentBorder}`,
+                  borderRadius: 6, padding: "12px 18px",
+                  display: "flex", alignItems: "center", justifyContent: "space-between",
+                  marginBottom: 20, fontFamily: mono, fontSize: 12,
+                }}>
+                  <span style={{ color: C.accent }}>
+                    Spec uploaded — ID: <code>{specId}</code>
+                  </span>
+                  <div style={{ display: "flex", gap: 10 }}>
+                    <Btn onClick={runScanStream} disabled={loading}>▶ Run Security Scan</Btn>
+                    <Btn onClick={verifyFix} disabled={loading}>Verify Fix</Btn>
+                  </div>
+                </div>
+              )}
 
-          {/* Empty state */}
-          {!report && !specId && (
-            <div style={{ textAlign: "center", marginTop: 60 }}>
-              <div style={{ fontFamily: mono, fontSize: 36, color: C.border, marginBottom: 12 }}>◈</div>
-              <div style={{ fontFamily: mono, fontSize: 13, color: C.textMuted }}>
-                Upload a spec or enter an API URL to begin scanning
-              </div>
-            </div>
-          )}
+              {/* FIX #4: Pass activeTab2 as initialTab so handleCompare can switch tabs */}
+              {report && (
+                <ReportView
+                  report={report}
+                  comparisonResult={comparisonResult}
+                  initialTab={activeTab2}
+                  token={token}
+                  scanId={activeScanId}
+                />
+              )}
+
+              {/* Empty state */}
+              {!report && !specId && (
+                <div style={{ textAlign: "center", marginTop: 60 }}>
+                  <div style={{ fontFamily: mono, fontSize: 36, color: C.border, marginBottom: 12 }}>◈</div>
+                  <div style={{ fontFamily: mono, fontSize: 13, color: C.textMuted }}>
+                    Upload a spec or enter an API URL to begin scanning
+                  </div>
+                </div>
+              )}
 
             </>
           )}
