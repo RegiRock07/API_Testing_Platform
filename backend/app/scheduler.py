@@ -83,6 +83,9 @@ async def _run_scheduled_scan_async(schedule_id: str) -> None:
         bearer = auth_config.get("bearer_token", "") if auth_config else ""
         try:
             parsed_data, raw_spec, spec_url = discover_endpoints(base_url, bearer)
+            if parsed_data is None:
+                print(f"[Scheduler] No OpenAPI spec found at {base_url} for schedule {schedule_id}")
+                return
         except Exception as e:
             print(f"[Scheduler] Endpoint discovery failed for {schedule_id}: {e}")
             return

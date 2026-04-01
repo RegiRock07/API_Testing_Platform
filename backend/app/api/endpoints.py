@@ -388,8 +388,30 @@ async def run_agents_stream(spec_id: str, current_user: dict = Depends(get_curre
 def discover_endpoints(base_url: str, auth_token: str = ""):
     base_url = base_url.rstrip("/")
     candidates = [
-        "/openapi.json", "/swagger.json", "/openapi.yaml",
-        "/swagger.yaml", "/api-docs", "/v1/openapi.json", "/v2/openapi.json",
+        # Standard
+        "/openapi.json", "/openapi.yaml",
+        "/swagger.json", "/swagger.yaml",
+        "/api-docs", "/api-docs.json", "/api-docs.yaml",
+
+        # Versioned
+        "/v1/openapi.json", "/v2/openapi.json", "/v3/openapi.json",
+        "/v1/swagger.json", "/v2/swagger.json",
+        "/v1/api-docs", "/v2/api-docs",
+
+        # Framework-specific
+        "/api/openapi.json",            # generic
+        "/api/swagger.json",
+        "/api/schema/",                 # Django REST Framework
+        "/api/schema/swagger-ui/",
+        "/swagger/v1/swagger.json",     # ASP.NET
+        "/v3/api-docs",                 # Spring Boot
+        "/v3/api-docs.yaml",
+        "/__docs",
+        "/.well-known/openapi.json",
+        "/docs/openapi.json",
+        "/api/v1/openapi.json",
+        "/api/v2/openapi.json",
+        "/api/v3/openapi.json",
     ]
     headers = {"Authorization": f"Bearer {auth_token}"} if auth_token else {}
     last_error = None
@@ -405,11 +427,7 @@ def discover_endpoints(base_url: str, auth_token: str = ""):
         except Exception as e:
             last_error = str(e)
 
-    raise HTTPException(
-        status_code=422,
-        detail=f"No OpenAPI spec found at {base_url}. "
-               f"Tried: {', '.join(candidates)}. Last error: {last_error}"
-    )
+    return None, None, None
 
 
 # ─────────────────────────────────────────
@@ -422,6 +440,21 @@ def scan_api_url(request: URLScanRequest, current_user: dict = Depends(get_curre
     parsed_data, raw_spec, spec_url = discover_endpoints(base_url, request.auth_token)
     user_id = current_user.get("id") if current_user.get("id") != "super" else None
 
+    # NEW: handle no spec found — run baseline checks instead of crashing
+    if raw_spec is None:
+        from app.services.baseline import run_baseline_checks
+        result = run_baseline_checks(base_url)
+        return {
+            "status": "partial",
+            "spec_found": False,
+            "spec_discovered_at": None,
+            "endpoints_found": 0,
+            "message": "No OpenAPI spec discovered. Ran baseline security checks instead.",
+            "tip": "For full endpoint testing, expose your OpenAPI spec or paste it manually.",
+            "result": result
+        }
+
+    # existing code below — do not change
     spec_id = spec_parser.store_spec(base_url, raw_spec, parsed_data, user_id=user_id)
     # Return immediately without blocking! The frontend will call /stream
     return {
@@ -899,6 +932,8 @@ def trigger_schedule_now(schedule_id: str, current_user: dict = Depends(get_curr
     else:
         # URL-based scan
         parsed_data, _, _ = discover_endpoints(base_url, auth_config.get("bearer_token", ""))
+        if parsed_data is None:
+            raise HTTPException(status_code=422, detail=f"No OpenAPI spec found at {base_url}")
         parsed_data["base_url"] = base_url
         if auth_config:
             parsed_data["auth"] = auth_config

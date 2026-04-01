@@ -1388,6 +1388,35 @@ export default function App() {
       method: "POST",
       body: JSON.stringify({ base_url: apiUrl }),
     });
+
+    // Handle partial result (no spec found — baseline checks only)
+    if (data.status === "partial") {
+      setReport({
+        summary: {
+          critical_risks: 0, high_risks: 0, medium_risks: 0, low_risks: 0,
+          total_security_findings: 0, total_tests_run: 0, failed_tests: 0,
+          passed_tests: 0, connection_errors: 0, deployment_status: "N/A",
+          api_was_reachable: true, deep_scan_performed: false,
+        },
+        security_findings: [],
+        api_test_results: [],
+        baseline_result: data.result,
+        message: data.message,
+        tip: data.tip,
+        executive_summary: data.message + " " + data.tip,
+        recommendations: [
+          ...(data.result.security_headers?.missing || []).map(h => `Add security header: ${h}`),
+          ...(data.result.cors?.misconfigured ? ["Fix CORS misconfiguration: restrict Access-Control-Allow-Origin"] : []),
+          ...(data.result.exposed_paths || []).map(p => `Remove or restrict access to exposed path: ${p}`),
+          ...(!data.result.ssl?.valid ? ["Install a valid SSL/TLS certificate"] : []),
+          ...(!data.result.ssl?.enforced ? ["Enforce HTTPS by redirecting HTTP to HTTPS"] : []),
+        ],
+      });
+      setSpecId(null);
+      setActiveScanId(null);
+      return;
+    }
+
     setSpecId(data.spec_id); setActiveScanId(data.spec_id);
     await runScanStream(data.spec_id);
   });
