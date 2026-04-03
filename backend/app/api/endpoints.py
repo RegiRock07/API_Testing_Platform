@@ -28,19 +28,8 @@ orchestrator = Orchestrator()
 # ─────────────────────────────────────────
 # Auth dependency (unchanged)
 # ─────────────────────────────────────────
-
-SENTINEL_API_KEY = os.getenv("SENTINEL_API_KEY", "")
-
-def require_auth(x_api_key: Optional[str] = Header(default=None)):
-    if not SENTINEL_API_KEY:
-        return  # dev mode — no auth required
-    if x_api_key != SENTINEL_API_KEY:
-        raise HTTPException(
-            status_code=401,
-            detail="Invalid or missing X-API-Key header"
-        )
-
-AuthDep = Depends(require_auth)
+# REPLACE WITH:
+from app.api.firebase_auth import AuthDep
 
 
 # ─────────────────────────────────────────

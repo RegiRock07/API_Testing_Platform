@@ -12,7 +12,8 @@ import json
 import asyncio
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
-
+from app.api.firebase_auth import get_current_user
+from fastapi import Depends
 from app.services.spec_parser import SpecParser
 from app.database import save_report
 
@@ -28,7 +29,7 @@ def sse(agent: str, status: str, data: dict = None) -> str:
     return f"data: {json.dumps(payload)}\n\n"
 
 
-@stream_router.post("/api/run/{spec_id}/stream")
+@stream_router.post("/api/run/{spec_id}/stream", dependencies=[Depends(get_current_user)])
 async def run_agents_stream(spec_id: str):
     """
     Run all agents and stream progress as SSE events.

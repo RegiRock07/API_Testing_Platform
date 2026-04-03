@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { signInWithGoogle, signOut, onAuth, getIdToken } from "./firebase";
 
 // ─── Config ───────────────────────────────────────────────────────
 const BASE     = process.env.REACT_APP_API_URL || "http://localhost:8000";
@@ -83,40 +84,41 @@ const renderMarkdown = (text) => {
   return text
     .replace(/\*\*(.+?)\*\*/g, `<strong style="color:${C.text}">$1</strong>`)
     .replace(/\*(.+?)\*/g, `<em>$1</em>`)
-    .replace(/^### (.+)$/gm, `<div style="font-weight:600;font-size:13px;color:${C.text};margin:18px 0 8px">${"$1"}</div>`)
-    .replace(/^## (.+)$/gm, `<div style="font-weight:700;font-size:14px;color:${C.text};margin:20px 0 10px">${"$1"}</div>`)
-    .replace(/^\d+\. (.+)$/gm, `<div style="padding:5px 0 5px 16px;border-left:2px solid ${C.accentBorder};margin-bottom:5px;color:${C.textSub}">${"$1"}</div>`)
+    .replace(/^### (.+)$/gm, `<div style="font-weight:600;font-size:13px;color:${C.text};margin:18px 0 8px">$1</div>`)
+    .replace(/^## (.+)$/gm, `<div style="font-weight:700;font-size:14px;color:${C.text};margin:20px 0 10px">$1</div>`)
+    .replace(/^\d+\. (.+)$/gm, `<div style="padding:5px 0 5px 16px;border-left:2px solid ${C.accentBorder};margin-bottom:5px;color:${C.textSub}">$1</div>`)
     .replace(/\n\n/g, `<div style="margin:10px 0"></div>`)
     .replace(/\n/g, `<br/>`);
 };
 
-// ─── API hook ─────────────────────────────────────────────────────
-function useApi() {
-  const [apiKey, setApiKey] = useState(
-    () => sessionStorage.getItem("sentinel_key") || ""
-  );
-
+// ─── Firebase API hook ────────────────────────────────────────────
+// Replaces the old X-API-Key approach with Firebase Bearer tokens.
+function useApi(user) {
   const apiFetch = useCallback(async (path, opts = {}) => {
+    const token = user ? await getIdToken() : null;
     const headers = { "Content-Type": "application/json", ...opts.headers };
-    if (apiKey) headers["X-API-Key"] = apiKey;
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
     const res  = await fetch(BASE + path, { ...opts, headers });
     if (res.status === 401) throw new Error("AUTH_FAILED");
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
-  }, [apiKey]);
+  }, [user]);
 
   const apiUpload = useCallback(async (path, formData) => {
+    const token = user ? await getIdToken() : null;
     const headers = {};
-    if (apiKey) headers["X-API-Key"] = apiKey;
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
     const res  = await fetch(BASE + path, { method: "POST", body: formData, headers });
     if (res.status === 401) throw new Error("AUTH_FAILED");
     const data = await res.json();
     if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
     return data;
-  }, [apiKey]);
+  }, [user]);
 
-  return { apiKey, setApiKey, apiFetch, apiUpload };
+  return { apiFetch, apiUpload };
 }
 
 // ─── Primitives ───────────────────────────────────────────────────
@@ -229,31 +231,16 @@ function SeveritySummary({ summary: s, deepScanPerformed, deepScanCount }) {
 
 function Btn({ onClick, children, variant = "primary", disabled, small }) {
   const map = {
-    primary: {
-      bg: C.accent, color: "#fff",
-      border: `1px solid ${C.accent}`,
-      hover: "#3d5ce6",
-    },
-    ghost: {
-      bg: "transparent", color: C.accent,
-      border: `1px solid ${C.accentBorder}`,
-    },
-    danger: {
-      bg: C.red, color: "#fff",
-      border: `1px solid ${C.red}`,
-    },
-    subtle: {
-      bg: C.surface, color: C.textSub,
-      border: `1px solid ${C.border}`,
-    },
+    primary: { bg: C.accent, color: "#fff", border: `1px solid ${C.accent}` },
+    ghost:   { bg: "transparent", color: C.accent, border: `1px solid ${C.accentBorder}` },
+    danger:  { bg: C.red, color: "#fff", border: `1px solid ${C.red}` },
+    subtle:  { bg: C.surface, color: C.textSub, border: `1px solid ${C.border}` },
   };
   const s = map[variant] || map.primary;
   return (
     <button onClick={onClick} disabled={disabled} style={{
-      fontFamily: sans, fontSize: small ? 12 : 13,
-      fontWeight: 600,
-      padding: small ? "6px 14px" : "9px 18px",
-      borderRadius: 7,
+      fontFamily: sans, fontSize: small ? 12 : 13, fontWeight: 600,
+      padding: small ? "6px 14px" : "9px 18px", borderRadius: 7,
       cursor: disabled ? "not-allowed" : "pointer",
       opacity: disabled ? 0.45 : 1,
       background: s.bg, color: s.color, border: s.border,
@@ -267,15 +254,13 @@ function Btn({ onClick, children, variant = "primary", disabled, small }) {
 
 function Input({ value, onChange, placeholder, type = "text", style = {} }) {
   return (
-    <input type={type} value={value} onChange={onChange}
-      placeholder={placeholder}
+    <input type={type} value={value} onChange={onChange} placeholder={placeholder}
       style={{
         fontFamily: sans, fontSize: 13,
         background: C.surface, color: C.text,
         border: `1px solid ${C.border}`, borderRadius: 7,
         padding: "9px 12px", outline: "none", width: "100%",
-        boxSizing: "border-box",
-        transition: "border-color 0.15s",
+        boxSizing: "border-box", transition: "border-color 0.15s",
         ...style,
       }}
       onFocus={e => e.target.style.borderColor = C.accent}
@@ -284,16 +269,10 @@ function Input({ value, onChange, placeholder, type = "text", style = {} }) {
   );
 }
 
-// ─── Section header ───────────────────────────────────────────────
 function SectionHeader({ title, count, color }) {
   return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 10,
-      marginBottom: 16,
-    }}>
-      <span style={{
-        fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text,
-      }}>{title}</span>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 16 }}>
+      <span style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>{title}</span>
       {count !== undefined && (
         <span style={{
           fontFamily: mono, fontSize: 11, fontWeight: 600,
@@ -307,127 +286,8 @@ function SectionHeader({ title, count, color }) {
   );
 }
 
-// ─── Streaming Progress ───────────────────────────────────────────
-function ScanProgress({ events }) {
-  const statusMap = {};
-  for (const ev of events) {
-    statusMap[ev.agent] = ev.status;
-  }
-
-  const completed = AGENTS.filter(
-    a => ["completed", "skipped", "error"].includes(statusMap[a.key])
-  ).length;
-  const pct = Math.round((completed / AGENTS.length) * 100);
-
-  const statusColor = (s) =>
-    s === "completed" ? C.green :
-    s === "running"   ? C.accent :
-    s === "skipped"   ? C.textFaint :
-    s === "error"     ? C.red : C.border;
-
-  const statusLabel = (s) =>
-    s === "completed" ? "Done" :
-    s === "running"   ? "Running…" :
-    s === "skipped"   ? "Skipped" :
-    s === "error"     ? "Error" : "Waiting";
-
-  return (
-    <div style={{
-      background: C.surface,
-      border: `1px solid ${C.border}`,
-      borderRadius: 12,
-      padding: "22px 24px",
-      marginBottom: 20,
-      boxShadow: C.shadow,
-    }}>
-      <div style={{
-        display: "flex", justifyContent: "space-between",
-        alignItems: "center", marginBottom: 20,
-      }}>
-        <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>
-          Scan in progress
-        </div>
-        <div style={{
-          fontFamily: mono, fontSize: 12, fontWeight: 600, color: C.accent,
-        }}>{pct}%</div>
-      </div>
-
-      {/* Progress bar */}
-      <div style={{
-        height: 4, background: C.bg, borderRadius: 4,
-        overflow: "hidden", marginBottom: 20,
-      }}>
-        <div style={{
-          height: "100%", width: `${pct}%`,
-          background: `linear-gradient(90deg, ${C.accent}, #7c9fff)`,
-          borderRadius: 4,
-          transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)",
-          boxShadow: `0 0 12px ${C.accent}60`,
-        }} />
-      </div>
-
-      <div style={{
-        display: "grid", gridTemplateColumns: "1fr 1fr",
-        gap: "6px 24px",
-      }}>
-        {AGENTS.map((agent) => {
-          const status = statusMap[agent.key] || "pending";
-          const color  = statusColor(status);
-          const isRunning = status === "running";
-
-          return (
-            <div key={agent.key} style={{
-              display: "flex", alignItems: "center", gap: 10,
-              padding: "6px 0",
-            }}>
-              <div style={{
-                width: 7, height: 7, borderRadius: "50%",
-                background: color,
-                flexShrink: 0,
-                boxShadow: isRunning ? `0 0 0 3px ${color}30` : "none",
-                animation: isRunning ? "pulse 1.4s ease infinite" : "none",
-              }} />
-              <span style={{
-                fontFamily: sans, fontSize: 13,
-                color: status === "pending" ? C.textFaint : C.textSub,
-                flex: 1, fontWeight: 500,
-              }}>
-                {agent.label}
-              </span>
-              <span style={{
-                fontFamily: mono, fontSize: 10, color,
-                letterSpacing: "0.03em",
-              }}>
-                {statusLabel(status)}
-              </span>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
-}
-
 // ─── Login Screen ─────────────────────────────────────────────────
-function LoginScreen({ onAuth }) {
-  const [key, setKey]         = useState("");
-  const [err, setErr]         = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const tryLogin = async () => {
-    setLoading(true); setErr("");
-    try {
-      const res = await fetch(BASE + "/health", {
-        headers: { "X-API-Key": key },
-      });
-      if (res.status === 401) { setErr("Wrong API key — try again"); return; }
-      sessionStorage.setItem("sentinel_key", key);
-      onAuth(key);
-    } catch {
-      setErr("Cannot reach backend at " + BASE);
-    } finally { setLoading(false); }
-  };
-
+function LoginScreen({ onSignIn, loading, error }) {
   return (
     <div style={{
       minHeight: "100vh", background: C.bg,
@@ -436,44 +296,216 @@ function LoginScreen({ onAuth }) {
     }}>
       <div style={{
         background: C.surface, border: `1px solid ${C.border}`,
-        borderRadius: 16, padding: "44px 48px", width: 400,
-        boxShadow: C.shadowMd,
+        borderRadius: 16, padding: "48px 52px", width: 420,
+        boxShadow: C.shadowMd, textAlign: "center",
       }}>
-        <div style={{ marginBottom: 28, textAlign: "center" }}>
-          <div style={{
-            width: 48, height: 48, borderRadius: 12,
-            background: C.accentLight,
-            border: `1px solid ${C.accentBorder}`,
-            display: "flex", alignItems: "center", justifyContent: "center",
-            margin: "0 auto 16px",
-            fontSize: 22, color: C.accent,
-          }}>◈</div>
-          <div style={{ fontSize: 20, fontWeight: 700, color: C.text, marginBottom: 6 }}>
-            {APP_NAME}
-          </div>
-          <div style={{ fontSize: 13, color: C.textMuted }}>
-            Enter your API key to continue
-          </div>
-        </div>
-        <Input value={key} onChange={e => setKey(e.target.value)}
-          placeholder="sk-••••••••••••••••" type="password"
-          style={{ marginBottom: 12, textAlign: "center", letterSpacing: "0.08em" }} />
-        {err && (
-          <div style={{
-            color: C.red, fontFamily: mono, fontSize: 11, marginBottom: 12,
-            background: C.redLight, border: `1px solid ${C.redBorder}`,
-            borderRadius: 6, padding: "7px 10px",
-          }}>{err}</div>
-        )}
-        <Btn onClick={tryLogin} disabled={loading || !key}>
-          {loading ? "Connecting…" : "Continue →"}
-        </Btn>
+        {/* Logo */}
         <div style={{
-          fontFamily: sans, fontSize: 12, color: C.textFaint, marginTop: 18,
-          textAlign: "center",
-        }}>
-          Leave blank for dev mode (no auth)
+          width: 56, height: 56, borderRadius: 14,
+          background: C.accentLight, border: `1px solid ${C.accentBorder}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          margin: "0 auto 20px", fontSize: 26, color: C.accent,
+        }}>◈</div>
+
+        <div style={{ fontSize: 22, fontWeight: 700, color: C.text, marginBottom: 8 }}>
+          {APP_NAME}
         </div>
+        <div style={{ fontSize: 14, color: C.textMuted, marginBottom: 36, lineHeight: 1.6 }}>
+          AI-powered API security testing platform.<br/>Sign in to continue.
+        </div>
+
+        {error && (
+          <div style={{
+            color: C.red, fontFamily: mono, fontSize: 11, marginBottom: 16,
+            background: C.redLight, border: `1px solid ${C.redBorder}`,
+            borderRadius: 6, padding: "8px 12px",
+          }}>{error}</div>
+        )}
+
+        {/* Google Sign-In button */}
+        <button
+          onClick={onSignIn}
+          disabled={loading}
+          style={{
+            display: "flex", alignItems: "center", justifyContent: "center",
+            gap: 12, width: "100%", padding: "11px 20px",
+            background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: 8, cursor: loading ? "not-allowed" : "pointer",
+            fontFamily: sans, fontSize: 14, fontWeight: 600, color: C.text,
+            boxShadow: C.shadow, transition: "all 0.15s",
+            opacity: loading ? 0.6 : 1,
+          }}
+        >
+          {/* Google SVG icon */}
+          <svg width="18" height="18" viewBox="0 0 18 18">
+            <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.875 2.684-6.615z"/>
+            <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"/>
+            <path fill="#FBBC05" d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"/>
+            <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"/>
+          </svg>
+          {loading ? "Signing in…" : "Continue with Google"}
+        </button>
+
+        <div style={{
+          fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 20,
+        }}>
+          Your account is authenticated via Firebase
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ─── User Avatar / Menu ───────────────────────────────────────────
+function UserMenu({ user, onSignOut }) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button
+        onClick={() => setOpen(o => !o)}
+        style={{
+          display: "flex", alignItems: "center", gap: 8,
+          background: C.surfaceHigh, border: `1px solid ${C.border}`,
+          borderRadius: 8, padding: "5px 10px 5px 6px",
+          cursor: "pointer", fontFamily: sans,
+        }}
+      >
+        {user.photoURL ? (
+          <img src={user.photoURL} alt="" style={{
+            width: 26, height: 26, borderRadius: "50%",
+            border: `1px solid ${C.border}`,
+          }} />
+        ) : (
+          <div style={{
+            width: 26, height: 26, borderRadius: "50%",
+            background: C.accentLight, border: `1px solid ${C.accentBorder}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontSize: 12, fontWeight: 700, color: C.accent,
+          }}>
+            {(user.displayName || user.email || "?")[0].toUpperCase()}
+          </div>
+        )}
+        <span style={{ fontSize: 13, fontWeight: 500, color: C.textSub }}>
+          {user.displayName?.split(" ")[0] || user.email}
+        </span>
+        <span style={{ fontSize: 10, color: C.textFaint }}>▾</span>
+      </button>
+
+      {open && (
+        <>
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: "fixed", inset: 0, zIndex: 10 }}
+          />
+          <div style={{
+            position: "absolute", right: 0, top: "calc(100% + 6px)",
+            background: C.surface, border: `1px solid ${C.border}`,
+            borderRadius: 10, boxShadow: C.shadowMd,
+            padding: "8px 0", zIndex: 20, minWidth: 220,
+          }}>
+            <div style={{
+              padding: "10px 16px 12px",
+              borderBottom: `1px solid ${C.border}`,
+              marginBottom: 4,
+            }}>
+              <div style={{ fontFamily: sans, fontSize: 13, fontWeight: 600, color: C.text }}>
+                {user.displayName || "User"}
+              </div>
+              <div style={{ fontFamily: sans, fontSize: 12, color: C.textFaint, marginTop: 2 }}>
+                {user.email}
+              </div>
+            </div>
+            <button
+              onClick={() => { setOpen(false); onSignOut(); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 8,
+                width: "100%", padding: "9px 16px",
+                background: "none", border: "none", cursor: "pointer",
+                fontFamily: sans, fontSize: 13, color: C.red,
+                textAlign: "left",
+              }}
+            >
+              Sign out
+            </button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ─── Streaming Progress ───────────────────────────────────────────
+function ScanProgress({ events }) {
+  const statusMap = {};
+  for (const ev of events) statusMap[ev.agent] = ev.status;
+
+  const completed = AGENTS.filter(
+    a => ["completed", "skipped", "error"].includes(statusMap[a.key])
+  ).length;
+  const pct = Math.round((completed / AGENTS.length) * 100);
+
+  const statusColor = (s) =>
+    s === "completed" ? C.green  :
+    s === "running"   ? C.accent :
+    s === "skipped"   ? C.textFaint :
+    s === "error"     ? C.red : C.border;
+
+  const statusLabel = (s) =>
+    s === "completed" ? "Done"     :
+    s === "running"   ? "Running…" :
+    s === "skipped"   ? "Skipped"  :
+    s === "error"     ? "Error"    : "Waiting";
+
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`,
+      borderRadius: 12, padding: "22px 24px", marginBottom: 20, boxShadow: C.shadow,
+    }}>
+      <div style={{
+        display: "flex", justifyContent: "space-between",
+        alignItems: "center", marginBottom: 20,
+      }}>
+        <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>
+          Scan in progress
+        </div>
+        <div style={{ fontFamily: mono, fontSize: 12, fontWeight: 600, color: C.accent }}>
+          {pct}%
+        </div>
+      </div>
+      <div style={{
+        height: 4, background: C.bg, borderRadius: 4, overflow: "hidden", marginBottom: 20,
+      }}>
+        <div style={{
+          height: "100%", width: `${pct}%`,
+          background: `linear-gradient(90deg, ${C.accent}, #7c9fff)`,
+          borderRadius: 4, transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)",
+          boxShadow: `0 0 12px ${C.accent}60`,
+        }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "6px 24px" }}>
+        {AGENTS.map((agent) => {
+          const status    = statusMap[agent.key] || "pending";
+          const color     = statusColor(status);
+          const isRunning = status === "running";
+          return (
+            <div key={agent.key} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0" }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: "50%", background: color, flexShrink: 0,
+                boxShadow: isRunning ? `0 0 0 3px ${color}30` : "none",
+                animation: isRunning ? "pulse 1.4s ease infinite" : "none",
+              }} />
+              <span style={{
+                fontFamily: sans, fontSize: 13,
+                color: status === "pending" ? C.textFaint : C.textSub,
+                flex: 1, fontWeight: 500,
+              }}>{agent.label}</span>
+              <span style={{ fontFamily: mono, fontSize: 10, color, letterSpacing: "0.03em" }}>
+                {statusLabel(status)}
+              </span>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
@@ -503,21 +535,16 @@ function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
   };
 
   const filtered = scans.filter(s =>
-    !search ||
-    (s.api_title || s.name || "").toLowerCase().includes(search.toLowerCase())
+    !search || (s.api_title || s.name || "").toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <div style={{
-      width: collapsed ? 48 : 260,
-      minWidth: collapsed ? 48 : 260,
-      background: C.sidebar,
-      borderRight: `1px solid ${C.border}`,
-      display: "flex", flexDirection: "column",
-      height: "100vh", overflow: "hidden",
+      width: collapsed ? 48 : 260, minWidth: collapsed ? 48 : 260,
+      background: C.sidebar, borderRight: `1px solid ${C.border}`,
+      display: "flex", flexDirection: "column", height: "100vh", overflow: "hidden",
       transition: "width 0.2s cubic-bezier(0.4,0,0.2,1), min-width 0.2s cubic-bezier(0.4,0,0.2,1)",
     }}>
-      {/* Sidebar header */}
       <div style={{
         padding: collapsed ? "12px 0" : "16px 16px 12px",
         borderBottom: `1px solid ${C.border}`,
@@ -534,8 +561,7 @@ function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
               width: 28, height: 28, borderRadius: 8,
               background: C.accentLight, border: `1px solid ${C.accentBorder}`,
               display: "flex", alignItems: "center", justifyContent: "center",
-              fontSize: 14, color: C.accent, flexShrink: 0,
-              cursor: "pointer",
+              fontSize: 14, color: C.accent, flexShrink: 0, cursor: "pointer",
             }} onClick={onToggle}>◈</div>
             {!collapsed && (
               <span style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>
@@ -600,10 +626,7 @@ function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
               borderBottom: `1px solid ${C.border}18`,
               transition: "background 0.12s",
             }}>
-              <div style={{
-                display: "flex", justifyContent: "space-between",
-                alignItems: "flex-start",
-              }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
                 <div style={{
                   fontFamily: sans, fontSize: 13, fontWeight: 500,
                   color: isActive ? C.accent : C.text,
@@ -618,9 +641,7 @@ function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
                   borderRadius: 3, transition: "color 0.12s",
                 }}>×</button>
               </div>
-              <div style={{
-                fontFamily: sans, fontSize: 11, color: C.textFaint, marginBottom: 6,
-              }}>
+              <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, marginBottom: 6 }}>
                 {s.endpoint_count} endpoints · {timeAgo(s.created_at)}
               </div>
               <Badge
@@ -636,11 +657,7 @@ function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
       </div>
 
       {!collapsed && (
-        <div style={{
-          padding: "10px 14px",
-          borderTop: `1px solid ${C.border}`,
-          background: C.sidebarBg,
-        }}>
+        <div style={{ padding: "10px 14px", borderTop: `1px solid ${C.border}`, background: C.sidebarBg }}>
           <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint }}>
             {BASE.replace(/https?:\/\//, "")}
           </div>
@@ -658,17 +675,12 @@ function SecurityTable({ findings = [] }) {
   const [sortBy,         setSortBy]         = useState("severity");
 
   if (!findings.length) return (
-    <div style={{
-      display: "flex", alignItems: "center", gap: 10,
-      padding: "20px 0",
-      fontFamily: sans, fontSize: 14, color: C.green,
-    }}>
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 0", fontFamily: sans, fontSize: 14, color: C.green }}>
       <span style={{ fontSize: 18 }}>✓</span> No security findings detected.
     </div>
   );
 
   const sevOrder = { CRITICAL: 4, HIGH: 3, MEDIUM: 2, LOW: 1 };
-
   const filtered = findings
     .filter(f => severityFilter === "ALL" || f.severity === severityFilter)
     .filter(f => typeFilter    === "ALL" || f.detection_type === typeFilter)
@@ -680,8 +692,7 @@ function SecurityTable({ findings = [] }) {
 
   const FilterBtn = ({ label, active, onClick, activeColor }) => (
     <button onClick={onClick} style={{
-      fontFamily: sans, fontSize: 12, fontWeight: 500,
-      padding: "4px 12px", borderRadius: 6,
+      fontFamily: sans, fontSize: 12, fontWeight: 500, padding: "4px 12px", borderRadius: 6,
       border: `1px solid ${active ? (activeColor || C.accent) : C.border}`,
       background: active ? (activeColor ? `${activeColor}12` : C.accentLight) : C.surface,
       color: active ? (activeColor || C.accent) : C.textMuted,
@@ -691,44 +702,24 @@ function SecurityTable({ findings = [] }) {
 
   return (
     <div>
-      {/* Filters */}
       <div style={{
-        display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap",
-        alignItems: "center",
+        display: "flex", gap: 6, marginBottom: 16, flexWrap: "wrap", alignItems: "center",
         padding: "10px 14px", background: C.surfaceHigh,
         border: `1px solid ${C.border}`, borderRadius: 8,
       }}>
-        <span style={{
-          fontFamily: sans, fontSize: 11, color: C.textFaint,
-          fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em",
-          marginRight: 4,
-        }}>Severity</span>
+        <span style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginRight: 4 }}>Severity</span>
         {["ALL","CRITICAL","HIGH","MEDIUM","LOW"].map(s => (
-          <FilterBtn key={s} label={s}
-            active={severityFilter === s}
-            onClick={() => setSeverityFilter(s)}
-            activeColor={s === "CRITICAL" || s === "HIGH" ? C.red : s === "MEDIUM" ? C.yellow : s === "LOW" ? C.green : undefined}
-          />
+          <FilterBtn key={s} label={s} active={severityFilter === s} onClick={() => setSeverityFilter(s)}
+            activeColor={s === "CRITICAL" || s === "HIGH" ? C.red : s === "MEDIUM" ? C.yellow : s === "LOW" ? C.green : undefined} />
         ))}
         <div style={{ width: 1, height: 20, background: C.border, margin: "0 4px" }} />
-        <span style={{
-          fontFamily: sans, fontSize: 11, color: C.textFaint,
-          fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em",
-          marginRight: 4,
-        }}>Type</span>
+        <span style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginRight: 4 }}>Type</span>
         {["ALL","STATIC","DYNAMIC"].map(t => (
-          <FilterBtn key={t} label={t}
-            active={typeFilter === t}
-            onClick={() => setTypeFilter(t)}
-            activeColor={t === "DYNAMIC" ? C.green : undefined}
-          />
+          <FilterBtn key={t} label={t} active={typeFilter === t} onClick={() => setTypeFilter(t)}
+            activeColor={t === "DYNAMIC" ? C.green : undefined} />
         ))}
         <div style={{ width: 1, height: 20, background: C.border, margin: "0 4px" }} />
-        <span style={{
-          fontFamily: sans, fontSize: 11, color: C.textFaint,
-          fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em",
-          marginRight: 4,
-        }}>Sort</span>
+        <span style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginRight: 4 }}>Sort</span>
         <FilterBtn label="Severity" active={sortBy === "severity"} onClick={() => setSortBy("severity")} />
         <FilterBtn label="Endpoint" active={sortBy === "endpoint"} onClick={() => setSortBy("endpoint")} />
       </div>
@@ -744,28 +735,19 @@ function SecurityTable({ findings = [] }) {
           const vulnName = f.vulnerability || f.risk_type || "Unknown";
           const hasPoC   = !!f.exploit_poc;
           const isOpen   = exp === i;
-
           return (
             <div key={i} style={{
               border: `1px solid ${isOpen ? C.accentBorder : C.border}`,
-              borderRadius: 8,
-              background: C.surface,
-              overflow: "hidden",
+              borderRadius: 8, background: C.surface, overflow: "hidden",
               transition: "border-color 0.15s",
               boxShadow: isOpen ? `0 0 0 3px ${C.accentLight}` : "none",
             }}>
-              {/* Row */}
               <div onClick={() => setExp(isOpen ? null : i)} style={{
-                display: "grid",
-                gridTemplateColumns: "1fr 2fr auto auto 32px",
-                gap: 12, alignItems: "center",
-                padding: "12px 16px", cursor: "pointer",
+                display: "grid", gridTemplateColumns: "1fr 2fr auto auto 32px",
+                gap: 12, alignItems: "center", padding: "12px 16px", cursor: "pointer",
                 background: isOpen ? C.accentLight : "transparent",
               }}>
-                <div style={{
-                  fontFamily: mono, fontSize: 12, color: C.accent,
-                  overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
-                }}>
+                <div style={{ fontFamily: mono, fontSize: 12, color: C.accent, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
                   {f.endpoint}
                   {f.affected_methods?.length > 1 && (
                     <span style={{ fontSize: 10, color: C.textFaint, marginLeft: 6 }}>
@@ -777,115 +759,59 @@ function SecurityTable({ findings = [] }) {
                   {vulnName}
                   {hasPoC && (
                     <span style={{
-                      fontFamily: mono, fontSize: 10, color: C.purple,
-                      marginLeft: 8, border: `1px solid ${C.purpleBorder}`,
-                      padding: "1px 6px", borderRadius: 4,
-                      background: C.purpleLight,
+                      fontFamily: mono, fontSize: 10, color: C.purple, marginLeft: 8,
+                      border: `1px solid ${C.purpleBorder}`, padding: "1px 6px",
+                      borderRadius: 4, background: C.purpleLight,
                     }}>PoC</span>
                   )}
                 </div>
-                <Badge
-                  label={f.severity}
-                  color={sevColor(f.severity)}
-                  bg={sevBg(f.severity)}
-                  border={sevBorder(f.severity)}
-                  small
-                />
+                <Badge label={f.severity} color={sevColor(f.severity)} bg={sevBg(f.severity)} border={sevBorder(f.severity)} small />
                 <div style={{ fontFamily: sans, fontSize: 11, fontWeight: 500 }}>
                   {f.detection_type === "DYNAMIC"
                     ? <span style={{ color: C.green }}>● Confirmed</span>
-                    : <span style={{ color: C.textFaint }}>○ Static</span>
-                  }
+                    : <span style={{ color: C.textFaint }}>○ Static</span>}
                 </div>
-                <div style={{ color: C.textFaint, fontSize: 12, textAlign: "center" }}>
-                  {isOpen ? "▲" : "▼"}
-                </div>
+                <div style={{ color: C.textFaint, fontSize: 12, textAlign: "center" }}>{isOpen ? "▲" : "▼"}</div>
               </div>
 
-              {/* Expanded */}
               {isOpen && (
-                <div style={{
-                  padding: "16px 20px",
-                  borderTop: `1px solid ${C.border}`,
-                  background: C.surfaceHigh,
-                }}>
-                  <p style={{
-                    fontFamily: sans, fontSize: 13, color: C.textSub,
-                    lineHeight: 1.7, margin: "0 0 12px",
-                  }}>{f.description}</p>
-
+                <div style={{ padding: "16px 20px", borderTop: `1px solid ${C.border}`, background: C.surfaceHigh }}>
+                  <p style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.7, margin: "0 0 12px" }}>
+                    {f.description}
+                  </p>
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: hasPoC ? 16 : 0 }}>
                     {f.confidence && (
-                      <Badge
-                        label={`Confidence: ${f.confidence}`}
-                        color={f.confidence === "HIGH" ? C.red : f.confidence === "MEDIUM" ? C.yellow : C.textMuted}
-                        small
-                      />
+                      <Badge label={`Confidence: ${f.confidence}`}
+                        color={f.confidence === "HIGH" ? C.red : f.confidence === "MEDIUM" ? C.yellow : C.textMuted} small />
                     )}
                     {f.method && <Badge label={f.method} color={C.accent} bg={C.accentLight} border={C.accentBorder} small />}
                   </div>
-
                   {hasPoC && (
-                    <div style={{
-                      marginTop: 14,
-                      border: `1px solid ${C.purpleBorder}`,
-                      borderRadius: 8,
-                      background: C.purpleLight,
-                      padding: "14px 16px",
-                    }}>
-                      <div style={{
-                        fontFamily: sans, fontSize: 12, fontWeight: 700,
-                        color: C.purple, marginBottom: 10,
-                        display: "flex", alignItems: "center", gap: 6,
-                      }}>
+                    <div style={{ marginTop: 14, border: `1px solid ${C.purpleBorder}`, borderRadius: 8, background: C.purpleLight, padding: "14px 16px" }}>
+                      <div style={{ fontFamily: sans, fontSize: 12, fontWeight: 700, color: C.purple, marginBottom: 10, display: "flex", alignItems: "center", gap: 6 }}>
                         ◆ Proof of Concept Exploit
                       </div>
-                      <p style={{
-                        fontFamily: sans, fontSize: 13, color: C.textSub,
-                        lineHeight: 1.6, margin: "0 0 12px",
-                      }}>{f.exploit_poc.summary}</p>
-
+                      <p style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.6, margin: "0 0 12px" }}>{f.exploit_poc.summary}</p>
                       {f.exploit_poc.steps?.length > 0 && (
                         <div style={{ marginBottom: 12 }}>
-                          <div style={{
-                            fontFamily: sans, fontSize: 11, fontWeight: 600,
-                            color: C.textFaint, textTransform: "uppercase",
-                            letterSpacing: "0.06em", marginBottom: 6,
-                          }}>Steps</div>
+                          <div style={{ fontFamily: sans, fontSize: 11, fontWeight: 600, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Steps</div>
                           {f.exploit_poc.steps.map((step, si) => (
-                            <div key={si} style={{
-                              fontFamily: sans, fontSize: 12, color: C.textSub,
-                              lineHeight: 1.6, paddingLeft: 14, marginBottom: 5,
-                              borderLeft: `2px solid ${C.purpleBorder}`,
-                            }}>{step}</div>
+                            <div key={si} style={{ fontFamily: sans, fontSize: 12, color: C.textSub, lineHeight: 1.6, paddingLeft: 14, marginBottom: 5, borderLeft: `2px solid ${C.purpleBorder}` }}>{step}</div>
                           ))}
                         </div>
                       )}
                       {f.exploit_poc.sample_curl && (
                         <div style={{ marginBottom: 12 }}>
-                          <div style={{
-                            fontFamily: sans, fontSize: 11, fontWeight: 600,
-                            color: C.textFaint, textTransform: "uppercase",
-                            letterSpacing: "0.06em", marginBottom: 6,
-                          }}>Sample cURL</div>
-                          <div style={{
-                            fontFamily: mono, fontSize: 11, color: C.green,
-                            background: C.surface, border: `1px solid ${C.border}`,
-                            borderRadius: 6, padding: "10px 14px",
-                            wordBreak: "break-all", lineHeight: 1.6,
-                          }}>{f.exploit_poc.sample_curl}</div>
+                          <div style={{ fontFamily: sans, fontSize: 11, fontWeight: 600, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Sample cURL</div>
+                          <div style={{ fontFamily: mono, fontSize: 11, color: C.green, background: C.surface, border: `1px solid ${C.border}`, borderRadius: 6, padding: "10px 14px", wordBreak: "break-all", lineHeight: 1.6 }}>
+                            {f.exploit_poc.sample_curl}
+                          </div>
                         </div>
                       )}
                       {f.exploit_poc.verification_test && (
                         <div>
-                          <div style={{
-                            fontFamily: sans, fontSize: 11, fontWeight: 600,
-                            color: C.textFaint, textTransform: "uppercase",
-                            letterSpacing: "0.06em", marginBottom: 6,
-                          }}>Verification</div>
-                          <div style={{ fontFamily: sans, fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>
-                            {f.exploit_poc.verification_test}
-                          </div>
+                          <div style={{ fontFamily: sans, fontSize: 11, fontWeight: 600, color: C.textFaint, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Verification</div>
+                          <div style={{ fontFamily: sans, fontSize: 12, color: C.textSub, lineHeight: 1.6 }}>{f.exploit_poc.verification_test}</div>
                         </div>
                       )}
                     </div>
@@ -904,9 +830,7 @@ function SecurityTable({ findings = [] }) {
 function TestResults({ results = [] }) {
   const [open, setOpen] = useState(null);
   if (!results.length) return (
-    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>
-      No test results available.
-    </div>
+    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>No test results available.</div>
   );
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -916,18 +840,9 @@ function TestResults({ results = [] }) {
         const failed = tests.filter(t => t.passed === false).length;
         const isOpen = open === i;
         return (
-          <div key={i} style={{
-            border: `1px solid ${isOpen ? C.accentBorder : C.border}`,
-            borderRadius: 8, overflow: "hidden", background: C.surface,
-          }}>
-            <div onClick={() => setOpen(isOpen ? null : i)} style={{
-              display: "flex", justifyContent: "space-between", alignItems: "center",
-              padding: "12px 16px", cursor: "pointer",
-              background: isOpen ? C.accentLight : "transparent",
-            }}>
-              <span style={{ fontFamily: mono, fontSize: 12, color: C.accent, fontWeight: 600 }}>
-                {ep.method} {ep.endpoint}
-              </span>
+          <div key={i} style={{ border: `1px solid ${isOpen ? C.accentBorder : C.border}`, borderRadius: 8, overflow: "hidden", background: C.surface }}>
+            <div onClick={() => setOpen(isOpen ? null : i)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", background: isOpen ? C.accentLight : "transparent" }}>
+              <span style={{ fontFamily: mono, fontSize: 12, color: C.accent, fontWeight: 600 }}>{ep.method} {ep.endpoint}</span>
               <span style={{ display: "flex", gap: 12, alignItems: "center" }}>
                 <Badge label={`${passed} passed`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />
                 {failed > 0 && <Badge label={`${failed} failed`} color={C.red} bg={C.redLight} border={C.redBorder} small />}
@@ -938,59 +853,28 @@ function TestResults({ results = [] }) {
               <div style={{ borderTop: `1px solid ${C.border}` }}>
                 {tests.map((t, j) => {
                   if (t.test === "dynamic_fuzz_testing") return (
-                    <div key={j} style={{
-                      padding: "12px 16px", borderBottom: `1px solid ${C.border}18`,
-                    }}>
-                      <div style={{
-                        display: "flex", justifyContent: "space-between",
-                        alignItems: "center", marginBottom: 8,
-                      }}>
-                        <span style={{ fontFamily: sans, fontSize: 13, fontWeight: 600, color: C.textSub }}>
-                          Fuzz testing
-                        </span>
-                        <Badge
-                          label={`${t.vulnerable_count} / ${t.total_payloads} flagged`}
+                    <div key={j} style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}18` }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                        <span style={{ fontFamily: sans, fontSize: 13, fontWeight: 600, color: C.textSub }}>Fuzz testing</span>
+                        <Badge label={`${t.vulnerable_count} / ${t.total_payloads} flagged`}
                           color={t.vulnerable_count > 0 ? C.red : C.green}
                           bg={t.vulnerable_count > 0 ? C.redLight : C.greenLight}
-                          border={t.vulnerable_count > 0 ? C.redBorder : C.greenBorder}
-                          small
-                        />
+                          border={t.vulnerable_count > 0 ? C.redBorder : C.greenBorder} small />
                       </div>
                       {(t.results || []).filter(r => r.possible_vulnerability).map((r, k) => (
-                        <div key={k} style={{
-                          background: C.redLight, border: `1px solid ${C.redBorder}`,
-                          borderRadius: 5, padding: "6px 10px", marginBottom: 4,
-                          fontFamily: mono, fontSize: 11, color: C.red,
-                        }}>⚠ {r.payload} → {r.status_code || r.error}</div>
+                        <div key={k} style={{ background: C.redLight, border: `1px solid ${C.redBorder}`, borderRadius: 5, padding: "6px 10px", marginBottom: 4, fontFamily: mono, fontSize: 11, color: C.red }}>
+                          ⚠ {r.payload} → {r.status_code || r.error}
+                        </div>
                       ))}
                     </div>
                   );
                   return (
-                    <div key={j} style={{
-                      display: "flex", justifyContent: "space-between", alignItems: "center",
-                      padding: "9px 16px", borderBottom: `1px solid ${C.border}18`,
-                    }}>
-                      <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub }}>
-                        {t.test.replace(/_/g, " ")}
-                      </span>
+                    <div key={j} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 16px", borderBottom: `1px solid ${C.border}18` }}>
+                      <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub }}>{t.test.replace(/_/g, " ")}</span>
                       <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
-                        {t.status_code && (
-                          <span style={{ fontFamily: mono, fontSize: 12, color: C.textFaint }}>
-                            HTTP {t.status_code}
-                          </span>
-                        )}
-                        {t.error && (
-                          <span style={{ fontFamily: mono, fontSize: 11, color: C.red }}>
-                            {t.error.slice(0, 50)}
-                          </span>
-                        )}
-                        <Badge
-                          label={t.passed ? "Pass" : "Fail"}
-                          color={t.passed ? C.green : C.red}
-                          bg={t.passed ? C.greenLight : C.redLight}
-                          border={t.passed ? C.greenBorder : C.redBorder}
-                          small
-                        />
+                        {t.status_code && <span style={{ fontFamily: mono, fontSize: 12, color: C.textFaint }}>HTTP {t.status_code}</span>}
+                        {t.error && <span style={{ fontFamily: mono, fontSize: 11, color: C.red }}>{t.error.slice(0, 50)}</span>}
+                        <Badge label={t.passed ? "Pass" : "Fail"} color={t.passed ? C.green : C.red} bg={t.passed ? C.greenLight : C.redLight} border={t.passed ? C.greenBorder : C.redBorder} small />
                       </span>
                     </div>
                   );
@@ -1007,37 +891,22 @@ function TestResults({ results = [] }) {
 // ─── Planner View ─────────────────────────────────────────────────
 function PlannerView({ plan }) {
   if (!plan || !Object.keys(plan).length) return (
-    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>
-      No planner assessment available.
-    </div>
+    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>No planner assessment available.</div>
   );
-  const riskColor = (l) =>
-    l === "CRITICAL" || l === "HIGH" ? C.red : l === "MEDIUM" ? C.yellow : C.green;
-  const riskBg = (l) =>
-    l === "CRITICAL" || l === "HIGH" ? C.redLight : l === "MEDIUM" ? C.yellowLight : C.greenLight;
+  const riskColor = (l) => l === "CRITICAL" || l === "HIGH" ? C.red : l === "MEDIUM" ? C.yellow : C.green;
+  const riskBg    = (l) => l === "CRITICAL" || l === "HIGH" ? C.redLight : l === "MEDIUM" ? C.yellowLight : C.greenLight;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-      {/* Risk summary */}
-      <div style={{
-        background: C.accentLight, border: `1px solid ${C.accentBorder}`,
-        borderRadius: 10, padding: "16px 18px",
-      }}>
-        <div style={{
-          fontFamily: sans, fontSize: 12, fontWeight: 700, color: C.accent,
-          textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8,
-        }}>Risk Summary</div>
-        <div style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.7 }}>
-          {plan.risk_summary}
-        </div>
+      <div style={{ background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 10, padding: "16px 18px" }}>
+        <div style={{ fontFamily: sans, fontSize: 12, fontWeight: 700, color: C.accent, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Risk Summary</div>
+        <div style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.7 }}>{plan.risk_summary}</div>
         {plan.auth_pattern_detected && (
           <div style={{ marginTop: 12 }}>
-            <Badge
-              label={`Auth: ${plan.auth_pattern_detected}`}
+            <Badge label={`Auth: ${plan.auth_pattern_detected}`}
               color={plan.auth_pattern_detected === "none" ? C.red : C.green}
               bg={plan.auth_pattern_detected === "none" ? C.redLight : C.greenLight}
-              border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder}
-            />
+              border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder} />
           </div>
         )}
       </div>
@@ -1047,39 +916,18 @@ function PlannerView({ plan }) {
           <SectionHeader title="High Risk Endpoints" count={plan.high_risk_endpoints.length} color={C.red} />
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {plan.high_risk_endpoints.map((ep, i) => (
-              <div key={i} style={{
-                background: C.surface, border: `1px solid ${C.border}`,
-                borderLeft: `3px solid ${riskColor(ep.risk_level)}`,
-                borderRadius: 8, padding: "12px 16px",
-              }}>
-                <div style={{
-                  display: "flex", justifyContent: "space-between",
-                  alignItems: "center", marginBottom: 8,
-                }}>
-                  <span style={{ fontFamily: mono, fontSize: 12, color: C.accent, fontWeight: 600 }}>
-                    {ep.method} {ep.path}
-                  </span>
-                  <Badge
-                    label={ep.risk_level}
-                    color={riskColor(ep.risk_level)}
-                    bg={riskBg(ep.risk_level)}
-                    border={`${riskColor(ep.risk_level)}40`}
-                    small
-                  />
+              <div key={i} style={{ background: C.surface, border: `1px solid ${C.border}`, borderLeft: `3px solid ${riskColor(ep.risk_level)}`, borderRadius: 8, padding: "12px 16px" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontFamily: mono, fontSize: 12, color: C.accent, fontWeight: 600 }}>{ep.method} {ep.path}</span>
+                  <Badge label={ep.risk_level} color={riskColor(ep.risk_level)} bg={riskBg(ep.risk_level)} border={`${riskColor(ep.risk_level)}40`} small />
                 </div>
                 <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: ep.attack_vectors?.length ? 8 : 0 }}>
                   {ep.risk_reasons?.map((r, ri) => (
-                    <span key={ri} style={{
-                      fontFamily: sans, fontSize: 11, color: C.textMuted,
-                      background: C.surfaceHigh, border: `1px solid ${C.border}`,
-                      borderRadius: 4, padding: "2px 8px",
-                    }}>{r}</span>
+                    <span key={ri} style={{ fontFamily: sans, fontSize: 11, color: C.textMuted, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 8px" }}>{r}</span>
                   ))}
                 </div>
                 {ep.attack_vectors?.length > 0 && (
-                  <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint }}>
-                    Vectors: {ep.attack_vectors.join(", ")}
-                  </div>
+                  <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint }}>Vectors: {ep.attack_vectors.join(", ")}</div>
                 )}
               </div>
             ))}
@@ -1091,12 +939,7 @@ function PlannerView({ plan }) {
         <div>
           <SectionHeader title="Business Logic Risks" color={C.yellow} />
           {plan.business_logic_risks.map((r, i) => (
-            <div key={i} style={{
-              fontFamily: sans, fontSize: 13, color: C.textSub,
-              padding: "8px 14px", borderLeft: `3px solid ${C.yellowBorder}`,
-              marginBottom: 6, lineHeight: 1.6,
-              background: C.yellowLight, borderRadius: "0 6px 6px 0",
-            }}>{r}</div>
+            <div key={i} style={{ fontFamily: sans, fontSize: 13, color: C.textSub, padding: "8px 14px", borderLeft: `3px solid ${C.yellowBorder}`, marginBottom: 6, lineHeight: 1.6, background: C.yellowLight, borderRadius: "0 6px 6px 0" }}>{r}</div>
           ))}
         </div>
       )}
@@ -1107,59 +950,28 @@ function PlannerView({ plan }) {
 // ─── Deployment View ──────────────────────────────────────────────
 function DeploymentView({ deployment }) {
   if (!deployment || deployment.status === "unknown") return (
-    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>
-      No deployment data available.
-    </div>
+    <div style={{ fontFamily: sans, color: C.textMuted, fontSize: 13, padding: "16px 0" }}>No deployment data available.</div>
   );
-
-  const scoreNum = parseInt(deployment.security_score);
+  const scoreNum   = parseInt(deployment.security_score);
   const scoreColor = !deployment.security_score || deployment.security_score === "N/A"
-    ? C.textFaint
-    : scoreNum >= 5 ? C.green : scoreNum >= 3 ? C.yellow : C.red;
+    ? C.textFaint : scoreNum >= 5 ? C.green : scoreNum >= 3 ? C.yellow : C.red;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-        {/* Score */}
-        <div style={{
-          background: C.surface, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 130,
-          boxShadow: C.shadow,
-        }}>
-          <div style={{ fontFamily: mono, fontSize: 32, fontWeight: 700, color: scoreColor, lineHeight: 1 }}>
-            {deployment.security_score || "N/A"}
-          </div>
-          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 6, fontWeight: 500 }}>
-            Security Score
-          </div>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 130, boxShadow: C.shadow }}>
+          <div style={{ fontFamily: mono, fontSize: 32, fontWeight: 700, color: scoreColor, lineHeight: 1 }}>{deployment.security_score || "N/A"}</div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 6, fontWeight: 500 }}>Security Score</div>
         </div>
-        {/* Status */}
-        <div style={{
-          background: C.surface, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 130,
-          boxShadow: C.shadow,
-        }}>
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 130, boxShadow: C.shadow }}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
-            <div style={{
-              width: 10, height: 10, borderRadius: "50%",
-              background: deployment.status === "healthy" ? C.green : C.red,
-              boxShadow: `0 0 6px ${deployment.status === "healthy" ? C.green : C.red}`,
-            }} />
-            <span style={{
-              fontFamily: sans, fontSize: 14, fontWeight: 700,
-              color: deployment.status === "healthy" ? C.green : C.red,
-            }}>
+            <div style={{ width: 10, height: 10, borderRadius: "50%", background: deployment.status === "healthy" ? C.green : C.red, boxShadow: `0 0 6px ${deployment.status === "healthy" ? C.green : C.red}` }} />
+            <span style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: deployment.status === "healthy" ? C.green : C.red }}>
               {(deployment.status || "unknown").charAt(0).toUpperCase() + (deployment.status || "unknown").slice(1)}
             </span>
           </div>
-          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, fontWeight: 500 }}>
-            Service Status
-          </div>
-          {deployment.latency_ms && (
-            <div style={{ fontFamily: mono, fontSize: 11, color: C.textFaint, marginTop: 6 }}>
-              {deployment.latency_ms}ms latency
-            </div>
-          )}
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, fontWeight: 500 }}>Service Status</div>
+          {deployment.latency_ms && <div style={{ fontFamily: mono, fontSize: 11, color: C.textFaint, marginTop: 6 }}>{deployment.latency_ms}ms latency</div>}
         </div>
       </div>
 
@@ -1169,18 +981,11 @@ function DeploymentView({ deployment }) {
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             {deployment.deployment_findings.map((df, i) => {
               const isHeader = df.check?.startsWith("security_header");
-              const color = df.check === "cors" ? C.red : C.yellow;
+              const color    = df.check === "cors" ? C.red : C.yellow;
               return (
-                <div key={i} style={{
-                  display: "flex", gap: 12, padding: "10px 14px",
-                  background: isHeader ? C.yellowLight : C.surface,
-                  border: `1px solid ${isHeader ? C.yellowBorder : C.border}`,
-                  borderLeft: `3px solid ${color}`, borderRadius: 8,
-                }}>
+                <div key={i} style={{ display: "flex", gap: 12, padding: "10px 14px", background: isHeader ? C.yellowLight : C.surface, border: `1px solid ${isHeader ? C.yellowBorder : C.border}`, borderLeft: `3px solid ${color}`, borderRadius: 8 }}>
                   <span style={{ color, fontSize: 14, flexShrink: 0 }}>▲</span>
-                  <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.5 }}>
-                    {df.issue}
-                  </span>
+                  <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.5 }}>{df.issue}</span>
                 </div>
               );
             })}
@@ -1192,72 +997,45 @@ function DeploymentView({ deployment }) {
         <div>
           <SectionHeader title="Security Headers" />
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {deployment.security_headers.present?.map(h => (
-              <Badge key={h} label={`✓ ${h}`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />
-            ))}
-            {deployment.security_headers.missing?.map(h => (
-              <Badge key={h} label={`✗ ${h}`} color={C.red} bg={C.redLight} border={C.redBorder} small />
-            ))}
+            {deployment.security_headers.present?.map(h => <Badge key={h} label={`✓ ${h}`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />)}
+            {deployment.security_headers.missing?.map(h => <Badge key={h} label={`✗ ${h}`} color={C.red} bg={C.redLight} border={C.redBorder} small />)}
           </div>
         </div>
       )}
     </div>
   );
 }
+
+// ─── Scan Header ──────────────────────────────────────────────────
 function ScanHeader({ report }) {
-  const plan = report.planner_assessment || {};
-  const dep  = report.deployment || {};
+  const plan     = report.planner_assessment || {};
+  const dep      = report.deployment || {};
   const findings = report.security_findings || [];
   const worst =
-    findings.some(f => f.severity === "CRITICAL") ? { label: "Critical", color: C.red } :
-    findings.some(f => f.severity === "HIGH")     ? { label: "High risk", color: C.red } :
-    findings.some(f => f.severity === "MEDIUM")   ? { label: "Medium risk", color: C.yellow } :
-    findings.length > 0                           ? { label: "Low risk", color: C.green } :
-                                                    { label: "Clean", color: C.green };
-
+    findings.some(f => f.severity === "CRITICAL") ? { label: "Critical",   color: C.red    } :
+    findings.some(f => f.severity === "HIGH")     ? { label: "High risk",  color: C.red    } :
+    findings.some(f => f.severity === "MEDIUM")   ? { label: "Medium risk",color: C.yellow } :
+    findings.length > 0                           ? { label: "Low risk",   color: C.green  } :
+                                                    { label: "Clean",      color: C.green  };
   return (
-    <div style={{
-      background: C.surface, border: `1px solid ${C.border}`,
-      borderRadius: 10, padding: "16px 20px",
-      marginBottom: 20, boxShadow: C.shadow,
-      display: "flex", alignItems: "center",
-      justifyContent: "space-between", gap: 16,
-    }}>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", marginBottom: 20, boxShadow: C.shadow, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <div style={{
-          width: 40, height: 40, borderRadius: 10,
-          background: C.accentLight, border: `1px solid ${C.accentBorder}`,
-          display: "flex", alignItems: "center", justifyContent: "center",
-          fontSize: 18, color: C.accent, flexShrink: 0,
-        }}>⊘</div>
+        <div style={{ width: 40, height: 40, borderRadius: 10, background: C.accentLight, border: `1px solid ${C.accentBorder}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: C.accent, flexShrink: 0 }}>⊘</div>
         <div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
-            <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>
-              {plan.title || "API Scan Report"}
-            </span>
+            <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>{plan.title || "API Scan Report"}</span>
             {plan.auth_pattern_detected && (
-              <Badge
-                label={`Auth: ${plan.auth_pattern_detected}`}
+              <Badge label={`Auth: ${plan.auth_pattern_detected}`}
                 color={plan.auth_pattern_detected === "none" ? C.red : C.green}
                 bg={plan.auth_pattern_detected === "none" ? C.redLight : C.greenLight}
-                border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder}
-                small
-              />
+                border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder} small />
             )}
           </div>
-          <div style={{
-            display: "flex", gap: 14, alignItems: "center",
-            fontFamily: sans, fontSize: 12, color: C.textFaint,
-          }}>
-            {report.summary?.total_security_findings !== undefined && (
-              <span>{report.summary.total_security_findings} findings</span>
-            )}
+          <div style={{ display: "flex", gap: 14, alignItems: "center", fontFamily: sans, fontSize: 12, color: C.textFaint }}>
+            {report.summary?.total_security_findings !== undefined && <span>{report.summary.total_security_findings} findings</span>}
             {dep.status && (
               <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
-                <span style={{
-                  width: 6, height: 6, borderRadius: "50%", display: "inline-block",
-                  background: dep.status === "healthy" ? C.green : C.red,
-                }} />
+                <span style={{ width: 6, height: 6, borderRadius: "50%", display: "inline-block", background: dep.status === "healthy" ? C.green : C.red }} />
                 {dep.status}
               </span>
             )}
@@ -1265,18 +1043,11 @@ function ScanHeader({ report }) {
           </div>
         </div>
       </div>
-
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
-        <Badge
-          label={worst.label}
-          color={worst.color}
-          bg={`${worst.color}12`}
-          border={`${worst.color}30`}
-        />
-      </div>
+      <Badge label={worst.label} color={worst.color} bg={`${worst.color}12`} border={`${worst.color}30`} />
     </div>
   );
 }
+
 // ─── Report View ──────────────────────────────────────────────────
 function ReportView({ report, onRescan, specId }) {
   const [tab, setTab] = useState("security");
@@ -1284,95 +1055,57 @@ function ReportView({ report, onRescan, specId }) {
 
   const exportJSON = () => {
     const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `sentinel-report-${Date.now()}.json`;
-    a.click();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href = url; a.download = `sentinel-report-${Date.now()}.json`; a.click();
     URL.revokeObjectURL(url);
   };
 
   const tabs = [
-    { key: "security",   label: "Security",       count: s.total_security_findings },
-    { key: "tests",      label: "API Tests",      count: s.total_tests_run },
-    { key: "planner",    label: "Planner"         },
-    { key: "deployment", label: "Deployment"      },
-    { key: "recs",       label: "Recommendations", count: report.recommendations?.length },
-    { key: "llm",        label: "AI Analysis"     },
+    { key: "security",   label: "Security",        count: s.total_security_findings },
+    { key: "tests",      label: "API Tests",        count: s.total_tests_run },
+    { key: "planner",    label: "Planner"           },
+    { key: "deployment", label: "Deployment"        },
+    { key: "recs",       label: "Recommendations",  count: report.recommendations?.length },
+    { key: "llm",        label: "AI Analysis"       },
   ];
 
   return (
     <div>
-
       <ScanHeader report={report} />
-      {/* Stat cards */}
-      <SeveritySummary
-        summary={s}
-        deepScanPerformed={report.deep_scan_performed}
-        deepScanCount={report.deep_scan_summary?.findings_enriched}
-      />
+      <SeveritySummary summary={s} deepScanPerformed={report.deep_scan_performed} deepScanCount={report.deep_scan_summary?.findings_enriched} />
 
-      {/* Info bar */}
-      <div style={{
-        display: "flex", justifyContent: "space-between", alignItems: "center",
-        background: C.accentLight, border: `1px solid ${C.accentBorder}`,
-        borderRadius: 8, padding: "10px 16px", marginBottom: 16,
-        fontFamily: sans, fontSize: 13,
-      }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontFamily: sans, fontSize: 13 }}>
         <span style={{ color: C.accent, fontWeight: 500 }}>
-          {report.test_generation?.test_cases_generated > 0
-            ? `${report.test_generation.test_cases_generated} test cases · ` : ""}
+          {report.test_generation?.test_cases_generated > 0 ? `${report.test_generation.test_cases_generated} test cases · ` : ""}
           {report.deep_scan_performed ? "Deep scan performed · " : ""}
           {s.total_security_findings} findings total
         </span>
         <div style={{ display: "flex", gap: 8 }}>
-          {specId && onRescan && (
-            <Btn onClick={onRescan} variant="ghost" small>↺ Re-scan</Btn>
-          )}
+          {specId && onRescan && <Btn onClick={onRescan} variant="ghost" small>↺ Re-scan</Btn>}
           <Btn onClick={exportJSON} variant="subtle" small>↓ Export JSON</Btn>
         </div>
       </div>
 
-      {/* Tabs */}
-      <div style={{
-        display: "flex", borderBottom: `1px solid ${C.border}`,
-        marginBottom: 0, gap: 0, overflowX: "auto",
-      }}>
+      <div style={{ display: "flex", borderBottom: `1px solid ${C.border}`, marginBottom: 0, gap: 0, overflowX: "auto" }}>
         {tabs.map(t => (
           <button key={t.key} onClick={() => setTab(t.key)} style={{
-            fontFamily: sans, fontSize: 13, fontWeight: 600,
-            padding: "10px 18px",
-            cursor: "pointer",
-            border: "none",
+            fontFamily: sans, fontSize: 13, fontWeight: 600, padding: "10px 18px",
+            cursor: "pointer", border: "none",
             borderBottom: tab === t.key ? `2px solid ${C.accent}` : "2px solid transparent",
-            background: "transparent",
-            color: tab === t.key ? C.accent : C.textMuted,
-            transition: "all 0.15s",
-            whiteSpace: "nowrap",
+            background: "transparent", color: tab === t.key ? C.accent : C.textMuted,
+            transition: "all 0.15s", whiteSpace: "nowrap",
             display: "flex", alignItems: "center", gap: 6,
           }}>
             {t.label}
             {t.count !== undefined && t.count > 0 && (
-              <span style={{
-                fontFamily: mono, fontSize: 10, fontWeight: 700,
-                background: tab === t.key ? C.accent : C.border,
-                color: tab === t.key ? "#fff" : C.textMuted,
-                padding: "1px 6px", borderRadius: 10,
-                transition: "all 0.15s",
-              }}>{t.count}</span>
+              <span style={{ fontFamily: mono, fontSize: 10, fontWeight: 700, background: tab === t.key ? C.accent : C.border, color: tab === t.key ? "#fff" : C.textMuted, padding: "1px 6px", borderRadius: 10, transition: "all 0.15s" }}>{t.count}</span>
             )}
           </button>
         ))}
       </div>
 
-      <div style={{
-        background: C.surface,
-        border: `1px solid ${C.border}`,
-        borderTop: "none",
-        borderRadius: "0 0 10px 10px",
-        padding: "20px 20px",
-        minHeight: 200,
-      }}>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: "none", borderRadius: "0 0 10px 10px", padding: "20px 20px", minHeight: 200 }}>
         {tab === "security"   && <SecurityTable findings={report.security_findings} />}
         {tab === "tests"      && <TestResults results={report.api_test_results} />}
         {tab === "planner"    && <PlannerView plan={report.planner_assessment} />}
@@ -1380,22 +1113,12 @@ function ReportView({ report, onRescan, specId }) {
         {tab === "recs" && (
           <div>
             {!(report.recommendations || []).length
-              ? <div style={{ fontFamily: sans, color: C.green, fontSize: 14, display: "flex", gap: 8, alignItems: "center" }}>
-                  <span>✓</span> No recommendations — looking good!
-                </div>
+              ? <div style={{ fontFamily: sans, color: C.green, fontSize: 14, display: "flex", gap: 8, alignItems: "center" }}><span>✓</span> No recommendations — looking good!</div>
               : <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {(report.recommendations || []).map((r, i) => (
-                    <div key={i} style={{
-                      display: "flex", gap: 12, padding: "12px 16px",
-                      background: C.yellowLight,
-                      border: `1px solid ${C.yellowBorder}`,
-                      borderLeft: `3px solid ${C.yellow}`,
-                      borderRadius: 8,
-                    }}>
+                    <div key={i} style={{ display: "flex", gap: 12, padding: "12px 16px", background: C.yellowLight, border: `1px solid ${C.yellowBorder}`, borderLeft: `3px solid ${C.yellow}`, borderRadius: 8 }}>
                       <span style={{ color: C.yellow, fontSize: 16, flexShrink: 0 }}>▲</span>
-                      <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
-                        {r}
-                      </span>
+                      <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>{r}</span>
                     </div>
                   ))}
                 </div>
@@ -1404,19 +1127,9 @@ function ReportView({ report, onRescan, specId }) {
         )}
         {tab === "llm" && (
           report.llm_analysis
-            ? <div
-                style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.8 }}
-                dangerouslySetInnerHTML={{ __html: renderMarkdown(report.llm_analysis) }}
-              />
-            : <div style={{
-                fontFamily: sans, fontSize: 13, color: C.textMuted,
-                background: C.surfaceHigh, border: `1px solid ${C.border}`,
-                borderRadius: 8, padding: "16px 20px",
-              }}>
-                Set <code style={{
-                  fontFamily: mono, fontSize: 12, background: C.accentLight,
-                  color: C.accent, padding: "1px 6px", borderRadius: 4,
-                }}>GROQ_API_KEY</code> to enable AI analysis.
+            ? <div style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.8 }} dangerouslySetInnerHTML={{ __html: renderMarkdown(report.llm_analysis) }} />
+            : <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted, background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 8, padding: "16px 20px" }}>
+                Set <code style={{ fontFamily: mono, fontSize: 12, background: C.accentLight, color: C.accent, padding: "1px 6px", borderRadius: 4 }}>GROQ_API_KEY</code> to enable AI analysis.
               </div>
         )}
       </div>
@@ -1427,15 +1140,8 @@ function ReportView({ report, onRescan, specId }) {
 // ─── Input Panel ──────────────────────────────────────────────────
 function InputPanel({ title, children }) {
   return (
-    <div style={{
-      background: C.surface, border: `1px solid ${C.border}`,
-      borderRadius: 10, overflow: "hidden", boxShadow: C.shadow,
-    }}>
-      <div style={{
-        padding: "12px 16px", borderBottom: `1px solid ${C.border}`,
-        background: C.surfaceHigh,
-        fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.text,
-      }}>{title}</div>
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", boxShadow: C.shadow }}>
+      <div style={{ padding: "12px 16px", borderBottom: `1px solid ${C.border}`, background: C.surfaceHigh, fontFamily: sans, fontSize: 13, fontWeight: 700, color: C.text }}>{title}</div>
       <div style={{ padding: 16 }}>{children}</div>
     </div>
   );
@@ -1443,18 +1149,45 @@ function InputPanel({ title, children }) {
 
 // ─── Main App ─────────────────────────────────────────────────────
 export default function App() {
-  const { apiKey, setApiKey, apiFetch, apiUpload } = useApi();
-
-  const [authChecked, setAuthChecked] = useState(false);
-  const [needsAuth,   setNeedsAuth]   = useState(false);
+  // ── Firebase auth state ────────────────────────────────────────
+  // undefined = loading, null = signed out, object = signed in
+  const [user, setUser] = useState(undefined);
+  const [authLoading, setAuthLoading] = useState(false);
+  const [authError,   setAuthError]   = useState("");
 
   useEffect(() => {
-    fetch(BASE + "/health").then(r => {
-      if (r.status === 401 && !apiKey) setNeedsAuth(true);
-      setAuthChecked(true);
-    }).catch(() => setAuthChecked(true));
-  }, [apiKey]);
+    // Subscribe to Firebase auth state changes
+    const unsubscribe = onAuth((firebaseUser) => {
+      setUser(firebaseUser); // null when signed out, user object when signed in
+    });
+    return unsubscribe; // cleanup on unmount
+  }, []);
 
+  const handleSignIn = async () => {
+    setAuthLoading(true);
+    setAuthError("");
+    try {
+      await signInWithGoogle();
+      // onAuth callback above will set user automatically
+    } catch (e) {
+      setAuthError(e.message || "Sign-in failed — please try again");
+    } finally {
+      setAuthLoading(false);
+    }
+  };
+
+  const handleSignOut = async () => {
+    await signOut();
+    // onAuth callback sets user to null automatically
+    setReport(null);
+    setSpecId(null);
+    setActiveScanId(null);
+  };
+
+  // ── API hook (uses Firebase token) ────────────────────────────
+  const { apiFetch, apiUpload } = useApi(user);
+
+  // ── Scan state ─────────────────────────────────────────────────
   const [specText,     setSpecText]     = useState("");
   const [specId,       setSpecId]       = useState(null);
   const [file,         setFile]         = useState(null);
@@ -1471,11 +1204,8 @@ export default function App() {
   const wrap = async (fn) => {
     setLoading(true); setError("");
     try { await fn(); }
-    catch (e) {
-      if (e.message === "AUTH_FAILED") { setNeedsAuth(true); return; }
-      setError(e.message || "Request failed");
-    }
-    finally { setLoading(false); }
+    catch (e) { setError(e.message || "Request failed"); }
+    finally   { setLoading(false); }
   };
 
   const uploadSpec = () => wrap(async () => {
@@ -1500,21 +1230,14 @@ export default function App() {
   const runScanStream = async (sid) => {
     const id = sid || specId;
     if (!id) return;
-
-    setStreaming(true);
-    setStreamEvents([]);
-    setReport(null);
-    setError("");
+    setStreaming(true); setStreamEvents([]); setReport(null); setError("");
 
     try {
-      const headers = {};
-      if (apiKey) headers["X-API-Key"] = apiKey;
+      const token   = user ? await getIdToken() : null;
+      const headers = token ? { "Authorization": `Bearer ${token}` } : {};
 
-      const response = await fetch(`${BASE}/api/run/${id}/stream`, {
-        method: "POST", headers,
-      });
-
-      if (response.status === 401) { setNeedsAuth(true); return; }
+      const response = await fetch(`${BASE}/api/run/${id}/stream`, { method: "POST", headers });
+      if (response.status === 401) throw new Error("Authentication failed — please sign in again");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader  = response.body.getReader();
@@ -1524,10 +1247,8 @@ export default function App() {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-
         const text  = decoder.decode(value, { stream: true });
         const lines = text.split("\n").filter(l => l.startsWith("data: "));
-
         for (const line of lines) {
           const raw = line.slice(6).trim();
           if (raw === "[DONE]") break;
@@ -1535,23 +1256,19 @@ export default function App() {
             const ev = JSON.parse(raw);
             events.push(ev);
             setStreamEvents([...events]);
-
             if (ev.agent === "report" && ev.status === "completed") {
               setReport(ev.data.report);
               setActiveScanId(id);
               setSidebarKey(k => k + 1);
             }
-            if (ev.agent === "error") {
-              setError(ev.data?.message || "Scan failed");
-            }
+            if (ev.agent === "error") setError(ev.data?.message || "Scan failed");
           } catch { }
         }
       }
     } catch (e) {
-      if (e.message !== "AUTH_FAILED") setError(e.message || "Scan failed");
+      setError(e.message || "Scan failed");
     } finally {
-      setStreaming(false);
-      setStreamEvents([]);
+      setStreaming(false); setStreamEvents([]);
     }
   };
 
@@ -1577,17 +1294,33 @@ export default function App() {
     } catch (e) { setError(e.message); }
   };
 
-  if (!authChecked) return null;
-  if (needsAuth && !apiKey) {
-    return <LoginScreen onAuth={(k) => { setApiKey(k); setNeedsAuth(false); }} />;
+  // ── Loading state (Firebase initialising) ─────────────────────
+  if (user === undefined) {
+    return (
+      <div style={{
+        minHeight: "100vh", background: C.bg,
+        display: "flex", alignItems: "center", justifyContent: "center",
+      }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 10,
+          background: C.accentLight, border: `1px solid ${C.accentBorder}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 20, color: C.accent,
+          animation: "pulse 1.4s ease infinite",
+        }}>◈</div>
+        <style>{`@keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.4} }`}</style>
+      </div>
+    );
   }
 
+  // ── Not signed in → show login ────────────────────────────────
+  if (!user) {
+    return <LoginScreen onSignIn={handleSignIn} loading={authLoading} error={authError} />;
+  }
+
+  // ── Signed in → show app ──────────────────────────────────────
   return (
-    <div style={{
-      display: "flex", height: "100vh",
-      background: C.bg, fontFamily: sans, color: C.text,
-      overflow: "hidden",
-    }}>
+    <div style={{ display: "flex", height: "100vh", background: C.bg, fontFamily: sans, color: C.text, overflow: "hidden" }}>
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap');
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -1597,7 +1330,7 @@ export default function App() {
         ::-webkit-scrollbar-thumb:hover { background: ${C.borderHigh}; }
         @keyframes pulse {
           0%, 100% { box-shadow: 0 0 0 0 rgba(79,110,247,0.3); }
-          50% { box-shadow: 0 0 0 5px rgba(79,110,247,0); }
+          50%       { box-shadow: 0 0 0 5px rgba(79,110,247,0); }
         }
         button:hover { opacity: 0.88; }
       `}</style>
@@ -1611,195 +1344,94 @@ export default function App() {
         onToggle={() => setSidebarCollapsed(c => !c)}
       />
 
-      <div style={{
-        flex: 1, display: "flex", flexDirection: "column", overflow: "hidden",
-      }}>
+      <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
         {/* Topbar */}
         <div style={{
-          height: 54, background: C.surface,
-          borderBottom: `1px solid ${C.border}`,
+          height: 54, background: C.surface, borderBottom: `1px solid ${C.border}`,
           display: "flex", alignItems: "center", padding: "0 24px",
           flexShrink: 0, justifyContent: "space-between",
           boxShadow: "0 1px 0 rgba(0,0,0,0.04)",
         }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{
-              fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text,
-            }}>
+            <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>
               API Security Scanner
             </span>
             <Badge label="Beta" color={C.accent} bg={C.accentLight} border={C.accentBorder} small />
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
             {(loading || streaming) && (
-              <span style={{
-                fontFamily: sans, fontSize: 12, fontWeight: 500,
-                color: C.accent, display: "flex", alignItems: "center", gap: 6,
-              }}>
-                <span style={{
-                  width: 7, height: 7, borderRadius: "50%",
-                  background: C.accent, display: "inline-block",
-                  animation: "pulse 1.4s ease infinite",
-                }} />
+              <span style={{ fontFamily: sans, fontSize: 12, fontWeight: 500, color: C.accent, display: "flex", alignItems: "center", gap: 6 }}>
+                <span style={{ width: 7, height: 7, borderRadius: "50%", background: C.accent, display: "inline-block", animation: "pulse 1.4s ease infinite" }} />
                 {streaming ? "Streaming…" : "Working…"}
               </span>
             )}
-            {apiKey && (
-              <button onClick={() => {
-                sessionStorage.clear(); setApiKey(""); setNeedsAuth(true);
-              }} style={{
-                fontFamily: sans, fontSize: 12, color: C.textMuted,
-                background: "none", border: `1px solid ${C.border}`,
-                borderRadius: 6, cursor: "pointer", padding: "5px 12px",
-              }}>Sign out</button>
-            )}
+            <UserMenu user={user} onSignOut={handleSignOut} />
           </div>
         </div>
 
         {/* Main content */}
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
-
-          {/* Error */}
           {error && (
-            <div style={{
-              background: C.redLight, border: `1px solid ${C.redBorder}`,
-              borderRadius: 8, padding: "10px 16px",
-              fontFamily: sans, fontSize: 13, color: C.red,
-              marginBottom: 18, display: "flex", gap: 8, alignItems: "center",
-            }}>
+            <div style={{ background: C.redLight, border: `1px solid ${C.redBorder}`, borderRadius: 8, padding: "10px 16px", fontFamily: sans, fontSize: 13, color: C.red, marginBottom: 18, display: "flex", gap: 8, alignItems: "center" }}>
               <span style={{ fontWeight: 700 }}>✕</span> {error}
             </div>
           )}
 
           {/* Input panels */}
-          <div style={{
-            display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
-            gap: 14, marginBottom: 20,
-          }}>
-            {/* Paste JSON */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14, marginBottom: 20 }}>
             <InputPanel title="Paste OpenAPI JSON">
-              <textarea rows={6} value={specText}
-                onChange={e => setSpecText(e.target.value)}
+              <textarea rows={6} value={specText} onChange={e => setSpecText(e.target.value)}
                 placeholder={"{\n  \"openapi\": \"3.0.0\",\n  ...\n}"}
-                style={{
-                  fontFamily: mono, fontSize: 11,
-                  background: C.surfaceHigh, color: C.text,
-                  border: `1px solid ${C.border}`, borderRadius: 7,
-                  padding: 10, width: "100%", resize: "vertical",
-                  outline: "none", marginBottom: 12,
-                  boxSizing: "border-box", lineHeight: 1.5,
-                }} />
-              <Btn onClick={uploadSpec} disabled={loading || streaming || !specText}>
-                Upload Spec
-              </Btn>
+                style={{ fontFamily: mono, fontSize: 11, background: C.surfaceHigh, color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, padding: 10, width: "100%", resize: "vertical", outline: "none", marginBottom: 12, boxSizing: "border-box", lineHeight: 1.5 }} />
+              <Btn onClick={uploadSpec} disabled={loading || streaming || !specText}>Upload Spec</Btn>
             </InputPanel>
 
-            {/* Upload file */}
             <InputPanel title="Upload File">
-              <label htmlFor="fup" style={{
-                display: "flex", flexDirection: "column",
-                alignItems: "center", justifyContent: "center",
-                border: `2px dashed ${file ? C.accentBorder : C.border}`,
-                borderRadius: 8, padding: "24px 14px",
-                marginBottom: 12, cursor: "pointer",
-                background: file ? C.accentLight : C.surfaceHigh,
-                transition: "all 0.15s", minHeight: 100,
-              }}>
-                <input type="file" accept=".json,.yaml,.yml"
-                  onChange={e => setFile(e.target.files[0])}
-                  style={{ display: "none" }} id="fup" />
+              <label htmlFor="fup" style={{ display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", border: `2px dashed ${file ? C.accentBorder : C.border}`, borderRadius: 8, padding: "24px 14px", marginBottom: 12, cursor: "pointer", background: file ? C.accentLight : C.surfaceHigh, transition: "all 0.15s", minHeight: 100 }}>
+                <input type="file" accept=".json,.yaml,.yml" onChange={e => setFile(e.target.files[0])} style={{ display: "none" }} id="fup" />
                 <div style={{ fontSize: 22, marginBottom: 8 }}>{file ? "📄" : "📂"}</div>
-                <div style={{
-                  fontFamily: sans, fontSize: 12,
-                  color: file ? C.accent : C.textMuted,
-                  fontWeight: file ? 600 : 400, textAlign: "center",
-                }}>
+                <div style={{ fontFamily: sans, fontSize: 12, color: file ? C.accent : C.textMuted, fontWeight: file ? 600 : 400, textAlign: "center" }}>
                   {file ? file.name : "Click to select .json / .yaml"}
                 </div>
               </label>
-              <Btn onClick={uploadFile} disabled={loading || streaming || !file}>
-                Upload File
-              </Btn>
+              <Btn onClick={uploadFile} disabled={loading || streaming || !file}>Upload File</Btn>
             </InputPanel>
 
-            {/* Scan URL */}
             <InputPanel title="Scan API URL">
               <div style={{ marginBottom: 12 }}>
-                <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)}
-                  placeholder="https://api.yourcompany.com"
-                  style={{ marginBottom: 8 }} />
-                <div style={{
-                  fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 4,
-                }}>
+                <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://api.yourcompany.com" style={{ marginBottom: 8 }} />
+                <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 4 }}>
                   Auto-discovers OpenAPI spec at common paths
                 </div>
               </div>
-              <Btn onClick={scanUrl} disabled={loading || streaming || !apiUrl}>
-                Scan URL
-              </Btn>
+              <Btn onClick={scanUrl} disabled={loading || streaming || !apiUrl}>Scan URL</Btn>
             </InputPanel>
           </div>
 
           {/* Upload ready banner */}
           {specId && !report && !streaming && (
-            <div style={{
-              background: C.accentLight,
-              border: `1px solid ${C.accentBorder}`,
-              borderRadius: 10, padding: "14px 20px",
-              display: "flex", alignItems: "center",
-              justifyContent: "space-between",
-              marginBottom: 20,
-              boxShadow: C.shadow,
-            }}>
+            <div style={{ background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, boxShadow: C.shadow }}>
               <div>
-                <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>
-                  Spec uploaded successfully
-                </div>
-                <div style={{ fontFamily: mono, fontSize: 11, color: C.textFaint }}>
-                  ID: {specId}
-                </div>
+                <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>Spec uploaded successfully</div>
+                <div style={{ fontFamily: mono, fontSize: 11, color: C.textFaint }}>ID: {specId}</div>
               </div>
-              <Btn onClick={() => runScanStream(specId)} disabled={streaming}>
-                ▶ Run Security Scan
-              </Btn>
+              <Btn onClick={() => runScanStream(specId)} disabled={streaming}>▶ Run Security Scan</Btn>
             </div>
           )}
 
-          {/* Streaming progress */}
-          {streaming && streamEvents.length > 0 && (
-            <ScanProgress events={streamEvents} />
-          )}
+          {streaming && streamEvents.length > 0 && <ScanProgress events={streamEvents} />}
 
-          {/* Report */}
           {report && !streaming && (
-            <ReportView
-              report={report}
-              specId={specId}
-              onRescan={() => runScanStream(specId)}
-            />
+            <ReportView report={report} specId={specId} onRescan={() => runScanStream(specId)} />
           )}
 
-          {/* Empty state */}
           {!report && !specId && !streaming && (
-            <div style={{
-              textAlign: "center", marginTop: 60, padding: "0 40px",
-            }}>
-              <div style={{
-                width: 64, height: 64, borderRadius: 16,
-                background: C.accentLight, border: `1px solid ${C.accentBorder}`,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                margin: "0 auto 20px", fontSize: 28, color: C.accent,
-              }}>◈</div>
-              <div style={{
-                fontFamily: sans, fontSize: 18, fontWeight: 700,
-                color: C.text, marginBottom: 10,
-              }}>
-                API Security Scanner
+            <div style={{ textAlign: "center", marginTop: 60, padding: "0 40px" }}>
+              <div style={{ width: 64, height: 64, borderRadius: 16, background: C.accentLight, border: `1px solid ${C.accentBorder}`, display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px", fontSize: 28, color: C.accent }}>◈</div>
+              <div style={{ fontFamily: sans, fontSize: 18, fontWeight: 700, color: C.text, marginBottom: 10 }}>
+                Welcome, {user.displayName?.split(" ")[0] || "there"} 👋
               </div>
-              <div style={{
-                fontFamily: sans, fontSize: 14, color: C.textMuted, maxWidth: 400, margin: "0 auto",
-                lineHeight: 1.7,
-              }}>
+              <div style={{ fontFamily: sans, fontSize: 14, color: C.textMuted, maxWidth: 400, margin: "0 auto", lineHeight: 1.7 }}>
                 Upload an OpenAPI spec, drop a file, or enter an API URL above to begin a security scan.
               </div>
             </div>
