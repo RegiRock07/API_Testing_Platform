@@ -1,41 +1,49 @@
 # backend/app/main.py
+
 from dotenv import load_dotenv
-load_dotenv()
+import os
+load_dotenv(os.path.join(os.path.dirname(__file__), '../../.env'))
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.api.endpoints import router
+from app.api.endpoints  import router
+from app.api.streaming  import stream_router
 from app.database import init_db
-import os
 
 app = FastAPI(
     title="API Sentinel",
     description="AI-powered API security testing platform",
-    version="0.2.0"
+    version="0.3.0"
 )
 
-# CORS — in production lock this down to your frontend's origin
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "*").strip()
+if ALLOWED_ORIGINS_ENV == "*":
+    ALLOWED_ORIGINS    = ["*"]
+    ALLOW_CREDENTIALS  = False
+else:
+    ALLOWED_ORIGINS    = [o.strip() for o in ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
+    ALLOW_CREDENTIALS  = True
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_credentials=True,
+    allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 app.include_router(router)
+app.include_router(stream_router)   # NEW — streaming endpoints
 
 
 @app.on_event("startup")
 def startup():
-    """Initialise SQLite tables on first run."""
     init_db()
 
 
 @app.get("/")
 def root():
-    return {"message": "API Sentinel", "version": "0.2.0", "status": "running"}
+    return {"message": "API Sentinel", "version": "0.3.0", "status": "running"}
 
 
 @app.get("/health")

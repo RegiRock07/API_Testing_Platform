@@ -31,11 +31,27 @@ const C = {
 const mono = `'IBM Plex Mono', 'Courier New', monospace`;
 const sans = `'DM Sans', system-ui, sans-serif`;
 
+// ─── Agent metadata for progress panel ───────────────────────────
+const AGENTS = [
+  { key: "planner",        label: "Planner",         icon: "◎" },
+  { key: "test_generation",label: "Test Generator",  icon: "⊡" },
+  { key: "security",       label: "Security Agent",  icon: "⊘" },
+  { key: "api_testing",    label: "API Testing",     icon: "⊛" },
+  { key: "deployment",     label: "Deployment",      icon: "⊕" },
+  { key: "deep_scan",      label: "Deep Scan",       icon: "◆" },
+  { key: "llm_analysis",   label: "AI Analysis",     icon: "◈" },
+  { key: "report",         label: "Report",          icon: "◉" },
+];
+
 // ─── Helpers ──────────────────────────────────────────────────────
-const sevColor  = (s) => s === "HIGH" ? C.red : s === "CRITICAL" ? C.red : s === "MEDIUM" ? C.yellow : C.green;
-const sevBg     = (s) => s === "HIGH" ? C.redDim : s === "CRITICAL" ? C.redDim : s === "MEDIUM" ? C.yellowDim : C.greenDim;
-const fmt       = (iso) => new Date(iso).toLocaleString();
-const timeAgo   = (iso) => {
+const sevColor = (s) =>
+  s === "CRITICAL" || s === "HIGH" ? C.red
+    : s === "MEDIUM" ? C.yellow : C.green;
+const sevBg = (s) =>
+  s === "CRITICAL" || s === "HIGH" ? C.redDim
+    : s === "MEDIUM" ? C.yellowDim : C.greenDim;
+
+const timeAgo = (iso) => {
   const diff = Date.now() - new Date(iso).getTime();
   const m = Math.floor(diff / 60000);
   if (m < 1)  return "just now";
@@ -43,6 +59,19 @@ const timeAgo   = (iso) => {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h ago`;
   return `${Math.floor(h / 24)}d ago`;
+};
+
+// Render LLM markdown to HTML safely (no extra packages)
+const renderMarkdown = (text) => {
+  if (!text) return "";
+  return text
+    .replace(/\*\*(.+?)\*\*/g, `<strong style="color:${C.text}">$1</strong>`)
+    .replace(/\*(.+?)\*/g, `<em>$1</em>`)
+    .replace(/^### (.+)$/gm, `<div style="font-family:${mono};font-size:11px;color:${C.accent};letter-spacing:0.08em;margin:16px 0 8px;text-transform:uppercase">$1</div>`)
+    .replace(/^## (.+)$/gm, `<div style="font-family:${mono};font-size:12px;color:${C.accent};letter-spacing:0.08em;margin:16px 0 8px;text-transform:uppercase">$1</div>`)
+    .replace(/^\d+\. (.+)$/gm, `<div style="padding:4px 0 4px 16px;border-left:2px solid ${C.accentBorder};margin-bottom:4px">$1</div>`)
+    .replace(/\n\n/g, `<div style="margin:8px 0"></div>`)
+    .replace(/\n/g, `<br/>`);
 };
 
 // ─── API hook ─────────────────────────────────────────────────────
@@ -75,7 +104,6 @@ function useApi() {
 }
 
 // ─── Primitive components ─────────────────────────────────────────
-
 function Pill({ label, color, small }) {
   return (
     <span style={{
@@ -102,9 +130,9 @@ function StatCard({ label, value, color, sub }) {
         textTransform: "uppercase", letterSpacing: "0.08em", marginTop: 2,
       }}>{label}</div>
       {sub && (
-        <div style={{ fontFamily: mono, fontSize: 9, color: C.textMuted, marginTop: 3 }}>
-          {sub}
-        </div>
+        <div style={{
+          fontFamily: mono, fontSize: 9, color: C.textMuted, marginTop: 3,
+        }}>{sub}</div>
       )}
     </div>
   );
@@ -112,10 +140,10 @@ function StatCard({ label, value, color, sub }) {
 
 function Btn({ onClick, children, variant = "primary", disabled, small }) {
   const map = {
-    primary: { bg: C.accent,       color: "#000", border: "none" },
-    ghost:   { bg: "transparent",  color: C.accent, border: `1px solid ${C.accentBorder}` },
-    danger:  { bg: C.red,          color: "#fff", border: "none" },
-    subtle:  { bg: C.surfaceHigh,  color: C.textDim, border: `1px solid ${C.border}` },
+    primary: { bg: C.accent,      color: "#000", border: "none" },
+    ghost:   { bg: "transparent", color: C.accent, border: `1px solid ${C.accentBorder}` },
+    danger:  { bg: C.red,         color: "#fff", border: "none" },
+    subtle:  { bg: C.surfaceHigh, color: C.textDim, border: `1px solid ${C.border}` },
   };
   const s = map[variant] || map.primary;
   return (
@@ -144,10 +172,111 @@ function Input({ value, onChange, placeholder, type = "text", style = {} }) {
   );
 }
 
+// ─── Streaming Progress Panel ─────────────────────────────────────
+function ScanProgress({ events }) {
+  // Build agent status map from events
+  const statusMap = {};
+  for (const ev of events) {
+    statusMap[ev.agent] = ev.status;
+  }
+
+  const statusColor = (s) =>
+    s === "completed" ? C.green
+      : s === "running"   ? C.yellow
+      : s === "skipped"   ? C.textMuted
+      : s === "error"     ? C.red
+      : C.border;
+
+  const statusIcon = (s) =>
+    s === "completed" ? "✓"
+      : s === "running"   ? "⟳"
+      : s === "skipped"   ? "—"
+      : s === "error"     ? "✕"
+      : "·";
+
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`,
+      borderRadius: 8, padding: "20px 24px", marginBottom: 20,
+    }}>
+      <div style={{
+        fontFamily: mono, fontSize: 11, color: C.accent,
+        letterSpacing: "0.1em", marginBottom: 16,
+      }}>◈ SCAN IN PROGRESS</div>
+
+      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+        {AGENTS.map((agent) => {
+          const status = statusMap[agent.key] || "pending";
+          const color  = statusColor(status);
+          const isRunning = status === "running";
+
+          return (
+            <div key={agent.key} style={{
+              display: "flex", alignItems: "center", gap: 12,
+            }}>
+              {/* Status dot */}
+              <div style={{
+                width: 8, height: 8, borderRadius: "50%",
+                background: color,
+                boxShadow: isRunning ? `0 0 8px ${color}` : "none",
+                flexShrink: 0,
+                animation: isRunning ? "pulse 1s infinite" : "none",
+              }} />
+
+              {/* Agent name */}
+              <span style={{
+                fontFamily: mono, fontSize: 11,
+                color: status === "pending" ? C.textMuted : C.text,
+                flex: 1,
+              }}>
+                {agent.icon} {agent.label}
+              </span>
+
+              {/* Status label */}
+              <span style={{
+                fontFamily: mono, fontSize: 10, color,
+                letterSpacing: "0.06em",
+              }}>
+                {statusIcon(status)} {status.toUpperCase()}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* Progress bar */}
+      {(() => {
+        const completed = AGENTS.filter(
+          a => ["completed", "skipped", "error"].includes(statusMap[a.key])
+        ).length;
+        const pct = Math.round((completed / AGENTS.length) * 100);
+        return (
+          <div style={{ marginTop: 16 }}>
+            <div style={{
+              height: 2, background: C.border, borderRadius: 2, overflow: "hidden",
+            }}>
+              <div style={{
+                height: "100%", width: `${pct}%`,
+                background: C.accent,
+                transition: "width 0.4s ease",
+                boxShadow: `0 0 8px ${C.accent}`,
+              }} />
+            </div>
+            <div style={{
+              fontFamily: mono, fontSize: 10, color: C.textMuted,
+              marginTop: 6, textAlign: "right",
+            }}>{pct}% complete</div>
+          </div>
+        );
+      })()}
+    </div>
+  );
+}
+
 // ─── Login screen ─────────────────────────────────────────────────
 function LoginScreen({ onAuth }) {
-  const [key, setKey]       = useState("");
-  const [err, setErr]       = useState("");
+  const [key, setKey]         = useState("");
+  const [err, setErr]         = useState("");
   const [loading, setLoading] = useState(false);
 
   const tryLogin = async () => {
@@ -194,8 +323,7 @@ function LoginScreen({ onAuth }) {
         <div style={{
           fontFamily: mono, fontSize: 10, color: C.textMuted, marginTop: 20,
         }}>
-          Set <code style={{ color: C.accent }}>SENTINEL_API_KEY</code> env var
-          on the backend.<br />Leave blank to run without auth in dev mode.
+          Leave blank to run without auth in dev mode.
         </div>
       </div>
     </div>
@@ -211,7 +339,7 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
   const refresh = useCallback(async () => {
     setLoading(true);
     try { setScans(await apiFetch("/api/scans")); }
-    catch { /* silently skip */ }
+    catch { }
     finally { setLoading(false); }
   }, [apiFetch]);
 
@@ -236,10 +364,8 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
       borderRight: `1px solid ${C.border}`, display: "flex",
       flexDirection: "column", height: "100vh", overflow: "hidden",
     }}>
-      {/* Header */}
       <div style={{
-        padding: "16px 16px 10px",
-        borderBottom: `1px solid ${C.border}`,
+        padding: "16px 16px 10px", borderBottom: `1px solid ${C.border}`,
         display: "flex", alignItems: "center", justifyContent: "space-between",
       }}>
         <span style={{
@@ -252,22 +378,17 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
         }}>{loading ? "…" : "↻"}</button>
       </div>
 
-      {/* Search */}
       <div style={{ padding: "8px 12px", borderBottom: `1px solid ${C.border}22` }}>
-        <input
-          value={search}
-          onChange={e => setSearch(e.target.value)}
+        <input value={search} onChange={e => setSearch(e.target.value)}
           placeholder="Filter scans…"
           style={{
             fontFamily: mono, fontSize: 11, background: C.bg, color: C.text,
             border: `1px solid ${C.border}`, borderRadius: 3,
             padding: "5px 8px", width: "100%", outline: "none",
             boxSizing: "border-box",
-          }}
-        />
+          }} />
       </div>
 
-      {/* List */}
       <div style={{ flex: 1, overflowY: "auto" }}>
         {filtered.length === 0 && !loading && (
           <div style={{
@@ -300,8 +421,8 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
                 </div>
                 <button onClick={e => handleDelete(e, s.id)} style={{
                   background: "none", border: "none", color: C.textMuted,
-                  cursor: "pointer", fontSize: 13, lineHeight: 1,
-                  marginLeft: 6, flexShrink: 0,
+                  cursor: "pointer", fontSize: 13, lineHeight: 1, marginLeft: 6,
+                  flexShrink: 0,
                 }}>×</button>
               </div>
               <div style={{
@@ -319,7 +440,6 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
         })}
       </div>
 
-      {/* Footer */}
       <div style={{ padding: "12px 16px", borderTop: `1px solid ${C.border}` }}>
         <div style={{ fontFamily: mono, fontSize: 10, color: C.textMuted }}>
           ◈ {APP_NAME} · {BASE.replace(/https?:\/\//, "")}
@@ -346,7 +466,7 @@ function SecurityTable({ findings = [] }) {
 
   const filtered = findings
     .filter(f => severityFilter === "ALL" || f.severity === severityFilter)
-    .filter(f => typeFilter === "ALL" || f.detection_type === typeFilter)
+    .filter(f => typeFilter    === "ALL" || f.detection_type === typeFilter)
     .sort((a, b) =>
       sortBy === "severity"
         ? (sevOrder[b.severity] || 0) - (sevOrder[a.severity] || 0)
@@ -354,7 +474,7 @@ function SecurityTable({ findings = [] }) {
     );
 
   const filterPill = (label, active, onClick, color = C.accent) => (
-    <button onClick={onClick} style={{
+    <button key={label} onClick={onClick} style={{
       fontFamily: mono, fontSize: 10, padding: "3px 10px", borderRadius: 20,
       border: `1px solid ${active ? color : C.border}`,
       background: active ? `${color}18` : "transparent",
@@ -365,7 +485,6 @@ function SecurityTable({ findings = [] }) {
 
   return (
     <div>
-      {/* Filter bar */}
       <div style={{
         display: "flex", gap: 6, marginBottom: 14, flexWrap: "wrap",
         alignItems: "center",
@@ -373,17 +492,16 @@ function SecurityTable({ findings = [] }) {
         <span style={{
           fontFamily: mono, fontSize: 10, color: C.textMuted, marginRight: 4,
         }}>SEVERITY</span>
-        {["ALL", "CRITICAL", "HIGH", "MEDIUM", "LOW"].map(s => filterPill(
+        {["ALL","CRITICAL","HIGH","MEDIUM","LOW"].map(s => filterPill(
           s, severityFilter === s, () => setSeverityFilter(s),
           s === "CRITICAL" || s === "HIGH" ? C.red
-            : s === "MEDIUM" ? C.yellow
-            : s === "LOW" ? C.green : C.accent
+            : s === "MEDIUM" ? C.yellow : s === "LOW" ? C.green : C.accent
         ))}
         <span style={{
           fontFamily: mono, fontSize: 10, color: C.textMuted,
           marginLeft: 8, marginRight: 4,
         }}>TYPE</span>
-        {["ALL", "STATIC", "DYNAMIC"].map(t => filterPill(
+        {["ALL","STATIC","DYNAMIC"].map(t => filterPill(
           t, typeFilter === t, () => setTypeFilter(t),
           t === "DYNAMIC" ? C.green : C.textDim
         ))}
@@ -391,14 +509,8 @@ function SecurityTable({ findings = [] }) {
           fontFamily: mono, fontSize: 10, color: C.textMuted,
           marginLeft: 8, marginRight: 4,
         }}>SORT</span>
-        {filterPill(
-          "SEVERITY", sortBy === "severity",
-          () => setSortBy("severity")
-        )}
-        {filterPill(
-          "ENDPOINT", sortBy === "endpoint",
-          () => setSortBy("endpoint")
-        )}
+        {filterPill("SEVERITY", sortBy === "severity", () => setSortBy("severity"))}
+        {filterPill("ENDPOINT", sortBy === "endpoint", () => setSortBy("endpoint"))}
       </div>
 
       {filtered.length === 0 && (
@@ -408,12 +520,11 @@ function SecurityTable({ findings = [] }) {
       )}
 
       <table style={{
-        width: "100%", borderCollapse: "collapse",
-        fontFamily: mono, fontSize: 12,
+        width: "100%", borderCollapse: "collapse", fontFamily: mono, fontSize: 12,
       }}>
         <thead>
           <tr style={{ borderBottom: `1px solid ${C.border}` }}>
-            {["Endpoint", "Vulnerability", "Severity", "Type", ""].map(h => (
+            {["Endpoint","Vulnerability","Severity","Type",""].map(h => (
               <th key={h} style={{
                 color: C.textMuted, fontWeight: 600, padding: "8px 10px",
                 textAlign: "left", fontSize: 10, letterSpacing: "0.06em",
@@ -426,23 +537,18 @@ function SecurityTable({ findings = [] }) {
             const vulnName = f.vulnerability || f.risk_type || "Unknown";
             const hasPoC   = !!f.exploit_poc;
             const isOpen   = exp === i;
-
             return (
               <React.Fragment key={i}>
-                <tr
-                  onClick={() => setExp(isOpen ? null : i)}
-                  style={{
-                    borderBottom: `1px solid ${C.border}22`,
-                    cursor: "pointer",
-                    background: isOpen ? `${C.accent}08` : "transparent",
-                  }}
-                >
+                <tr onClick={() => setExp(isOpen ? null : i)} style={{
+                  borderBottom: `1px solid ${C.border}22`, cursor: "pointer",
+                  background: isOpen ? `${C.accent}08` : "transparent",
+                }}>
                   <td style={{ padding: "9px 10px", color: C.accent }}>
                     {f.endpoint}
-                    {f.affected_methods && f.affected_methods.length > 1 && (
+                    {f.affected_methods?.length > 1 && (
                       <span style={{
-                        fontFamily: mono, fontSize: 9, color: C.textMuted,
-                        marginLeft: 6,
+                        fontFamily: mono, fontSize: 9,
+                        color: C.textMuted, marginLeft: 6,
                       }}>
                         [{f.affected_methods.join(", ")}]
                       </span>
@@ -461,148 +567,107 @@ function SecurityTable({ findings = [] }) {
                   </td>
                   <td style={{ padding: "9px 10px" }}>
                     <span style={{
-                      background: sevBg(f.severity),
-                      color: sevColor(f.severity),
+                      background: sevBg(f.severity), color: sevColor(f.severity),
                       padding: "2px 8px", borderRadius: 3,
                       border: `1px solid ${sevColor(f.severity)}44`,
                       fontWeight: 700, fontSize: 10,
                     }}>{f.severity}</span>
                   </td>
                   <td style={{ padding: "9px 10px" }}>
-                    {f.detection_type === "DYNAMIC" ? (
-                      <span style={{
-                        fontFamily: mono, fontSize: 10,
-                        color: C.green,
-                      }}>● CONFIRMED</span>
-                    ) : (
-                      <span style={{
-                        fontFamily: mono, fontSize: 10,
-                        color: C.textMuted,
-                      }}>○ STATIC</span>
-                    )}
+                    {f.detection_type === "DYNAMIC"
+                      ? <span style={{ fontFamily: mono, fontSize: 10, color: C.green }}>● CONFIRMED</span>
+                      : <span style={{ fontFamily: mono, fontSize: 10, color: C.textMuted }}>○ STATIC</span>
+                    }
                   </td>
                   <td style={{
                     padding: "9px 10px", color: C.textMuted, fontSize: 11,
-                  }}>
-                    {isOpen ? "▲" : "▼"}
-                  </td>
+                  }}>{isOpen ? "▲" : "▼"}</td>
                 </tr>
 
                 {isOpen && (
-                  <tr>
-                    <td colSpan={5} style={{ padding: "0 10px 12px" }}>
+                  <tr><td colSpan={5} style={{ padding: "0 10px 12px" }}>
+                    <div style={{
+                      background: C.bg, border: `1px solid ${C.border}`,
+                      borderRadius: 4, padding: "12px 16px",
+                    }}>
                       <div style={{
-                        background: C.bg, border: `1px solid ${C.border}`,
-                        borderRadius: 4, padding: "12px 16px",
+                        color: C.textDim, lineHeight: 1.6,
+                        fontFamily: sans, fontSize: 13,
+                        marginBottom: hasPoC ? 14 : 0,
+                      }}>{f.description}</div>
+
+                      <div style={{
+                        display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap",
                       }}>
-                        {/* Description */}
-                        <div style={{
-                          color: C.textDim, lineHeight: 1.6,
-                          fontFamily: sans, fontSize: 13, marginBottom: hasPoC ? 14 : 0,
-                        }}>
-                          {f.description}
-                        </div>
-
-                        {/* Confidence + method */}
-                        <div style={{
-                          display: "flex", gap: 8, marginTop: 8,
-                          flexWrap: "wrap",
-                        }}>
-                          {f.confidence && (
-                            <Pill
-                              label={`Confidence: ${f.confidence}`}
-                              color={
-                                f.confidence === "HIGH" ? C.red
-                                  : f.confidence === "MEDIUM" ? C.yellow
-                                  : C.textMuted
-                              }
-                              small
-                            />
-                          )}
-                          {f.method && (
-                            <Pill label={f.method} color={C.accent} small />
-                          )}
-                        </div>
-
-                        {/* PoC Exploit */}
-                        {hasPoC && (
-                          <div style={{
-                            marginTop: 14,
-                            border: `1px solid ${C.purple}33`,
-                            borderRadius: 4,
-                            background: C.purpleDim,
-                            padding: "12px 14px",
-                          }}>
-                            <div style={{
-                              fontFamily: mono, fontSize: 10,
-                              color: C.purple, marginBottom: 10,
-                              letterSpacing: "0.08em",
-                            }}>◆ PROOF OF CONCEPT EXPLOIT</div>
-
-                            <div style={{
-                              fontFamily: sans, fontSize: 13,
-                              color: C.text, marginBottom: 10,
-                            }}>
-                              {f.exploit_poc.summary}
-                            </div>
-
-                            {/* Steps */}
-                            {f.exploit_poc.steps?.length > 0 && (
-                              <div style={{ marginBottom: 10 }}>
-                                <div style={{
-                                  fontFamily: mono, fontSize: 10,
-                                  color: C.textMuted, marginBottom: 6,
-                                }}>STEPS</div>
-                                {f.exploit_poc.steps.map((step, si) => (
-                                  <div key={si} style={{
-                                    fontFamily: sans, fontSize: 12,
-                                    color: C.textDim, lineHeight: 1.6,
-                                    paddingLeft: 12, marginBottom: 3,
-                                    borderLeft: `2px solid ${C.purple}44`,
-                                  }}>{step}</div>
-                                ))}
-                              </div>
-                            )}
-
-                            {/* Curl */}
-                            {f.exploit_poc.sample_curl && (
-                              <div style={{ marginBottom: 10 }}>
-                                <div style={{
-                                  fontFamily: mono, fontSize: 10,
-                                  color: C.textMuted, marginBottom: 6,
-                                }}>SAMPLE CURL</div>
-                                <div style={{
-                                  fontFamily: mono, fontSize: 11,
-                                  color: C.green, background: C.bg,
-                                  border: `1px solid ${C.border}`,
-                                  borderRadius: 3, padding: "8px 12px",
-                                  wordBreak: "break-all", lineHeight: 1.5,
-                                }}>
-                                  {f.exploit_poc.sample_curl}
-                                </div>
-                              </div>
-                            )}
-
-                            {/* Verification */}
-                            {f.exploit_poc.verification_test && (
-                              <div>
-                                <div style={{
-                                  fontFamily: mono, fontSize: 10,
-                                  color: C.textMuted, marginBottom: 6,
-                                }}>VERIFICATION</div>
-                                <div style={{
-                                  fontFamily: sans, fontSize: 12,
-                                  color: C.textDim, lineHeight: 1.6,
-                                }}>
-                                  {f.exploit_poc.verification_test}
-                                </div>
-                              </div>
-                            )}
-                          </div>
+                        {f.confidence && (
+                          <Pill
+                            label={`Confidence: ${f.confidence}`}
+                            color={f.confidence === "HIGH" ? C.red : f.confidence === "MEDIUM" ? C.yellow : C.textMuted}
+                            small
+                          />
                         )}
+                        {f.method && <Pill label={f.method} color={C.accent} small />}
                       </div>
-                    </td>
-                  </tr>
+
+                      {hasPoC && (
+                        <div style={{
+                          marginTop: 14, border: `1px solid ${C.purple}33`,
+                          borderRadius: 4, background: C.purpleDim,
+                          padding: "12px 14px",
+                        }}>
+                          <div style={{
+                            fontFamily: mono, fontSize: 10, color: C.purple,
+                            marginBottom: 10, letterSpacing: "0.08em",
+                          }}>◆ PROOF OF CONCEPT EXPLOIT</div>
+                          <div style={{
+                            fontFamily: sans, fontSize: 13,
+                            color: C.text, marginBottom: 10,
+                          }}>{f.exploit_poc.summary}</div>
+                          {f.exploit_poc.steps?.length > 0 && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{
+                                fontFamily: mono, fontSize: 10,
+                                color: C.textMuted, marginBottom: 6,
+                              }}>STEPS</div>
+                              {f.exploit_poc.steps.map((step, si) => (
+                                <div key={si} style={{
+                                  fontFamily: sans, fontSize: 12, color: C.textDim,
+                                  lineHeight: 1.6, paddingLeft: 12, marginBottom: 3,
+                                  borderLeft: `2px solid ${C.purple}44`,
+                                }}>{step}</div>
+                              ))}
+                            </div>
+                          )}
+                          {f.exploit_poc.sample_curl && (
+                            <div style={{ marginBottom: 10 }}>
+                              <div style={{
+                                fontFamily: mono, fontSize: 10,
+                                color: C.textMuted, marginBottom: 6,
+                              }}>SAMPLE CURL</div>
+                              <div style={{
+                                fontFamily: mono, fontSize: 11, color: C.green,
+                                background: C.bg, border: `1px solid ${C.border}`,
+                                borderRadius: 3, padding: "8px 12px",
+                                wordBreak: "break-all", lineHeight: 1.5,
+                              }}>{f.exploit_poc.sample_curl}</div>
+                            </div>
+                          )}
+                          {f.exploit_poc.verification_test && (
+                            <div>
+                              <div style={{
+                                fontFamily: mono, fontSize: 10,
+                                color: C.textMuted, marginBottom: 6,
+                              }}>VERIFICATION</div>
+                              <div style={{
+                                fontFamily: sans, fontSize: 12,
+                                color: C.textDim, lineHeight: 1.6,
+                              }}>{f.exploit_poc.verification_test}</div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </td></tr>
                 )}
               </React.Fragment>
             );
@@ -616,99 +681,71 @@ function SecurityTable({ findings = [] }) {
 // ─── API Test Results ─────────────────────────────────────────────
 function TestResults({ results = [] }) {
   const [open, setOpen] = useState(null);
-
   if (!results.length) return (
     <p style={{ fontFamily: mono, color: C.textMuted, fontSize: 12 }}>
       No test results.
     </p>
   );
-
   return results.map((ep, i) => {
     const tests  = ep.tests || [];
     const passed = tests.filter(t => t.passed === true).length;
     const failed = tests.filter(t => t.passed === false).length;
-
     return (
       <div key={i} style={{ marginBottom: 6 }}>
-        <div
-          onClick={() => setOpen(open === i ? null : i)}
-          style={{
-            display: "flex", justifyContent: "space-between",
-            alignItems: "center", background: C.surfaceHigh,
-            border: `1px solid ${C.border}`,
-            borderRadius: open === i ? "4px 4px 0 0" : 4,
-            padding: "9px 14px", cursor: "pointer",
-            fontFamily: mono, fontSize: 12,
-          }}
-        >
-          <span style={{ color: C.accent }}>
-            {ep.method} {ep.endpoint}
-          </span>
+        <div onClick={() => setOpen(open === i ? null : i)} style={{
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          background: C.surfaceHigh, border: `1px solid ${C.border}`,
+          borderRadius: open === i ? "4px 4px 0 0" : 4,
+          padding: "9px 14px", cursor: "pointer", fontFamily: mono, fontSize: 12,
+        }}>
+          <span style={{ color: C.accent }}>{ep.method} {ep.endpoint}</span>
           <span>
             <span style={{ color: C.green }}>{passed}✓</span>
             <span style={{ color: C.textMuted, margin: "0 6px" }}>/</span>
-            <span style={{ color: failed > 0 ? C.red : C.textMuted }}>
-              {failed}✗
-            </span>
+            <span style={{ color: failed > 0 ? C.red : C.textMuted }}>{failed}✗</span>
             <span style={{ color: C.textMuted, marginLeft: 12 }}>
               {open === i ? "▲" : "▼"}
             </span>
           </span>
         </div>
-
         {open === i && (
           <div style={{
             border: `1px solid ${C.border}`, borderTop: "none",
             borderRadius: "0 0 4px 4px",
           }}>
             {tests.map((t, j) => {
-              if (t.test === "dynamic_fuzz_testing") {
-                return (
-                  <div key={j} style={{
-                    padding: "10px 14px",
-                    borderBottom: `1px solid ${C.border}22`,
-                    fontFamily: mono, fontSize: 11,
+              if (t.test === "dynamic_fuzz_testing") return (
+                <div key={j} style={{
+                  padding: "10px 14px", borderBottom: `1px solid ${C.border}22`,
+                  fontFamily: mono, fontSize: 11,
+                }}>
+                  <div style={{
+                    display: "flex", justifyContent: "space-between", marginBottom: 6,
                   }}>
-                    <div style={{
-                      display: "flex", justifyContent: "space-between",
-                      marginBottom: 6,
-                    }}>
-                      <span style={{ color: C.textDim }}>fuzz_testing</span>
-                      <span style={{
-                        color: t.vulnerable_count > 0 ? C.red : C.green,
-                      }}>
-                        {t.vulnerable_count} / {t.total_payloads} flagged
-                      </span>
-                    </div>
-                    {(t.results || [])
-                      .filter(r => r.possible_vulnerability)
-                      .map((r, k) => (
-                        <div key={k} style={{
-                          background: C.redDim,
-                          border: `1px solid ${C.red}33`,
-                          borderRadius: 3, padding: "5px 9px",
-                          marginBottom: 3, color: C.red, fontSize: 10,
-                        }}>
-                          ⚠ {r.payload} → {r.status_code || r.error}
-                        </div>
-                      ))
-                    }
+                    <span style={{ color: C.textDim }}>fuzz_testing</span>
+                    <span style={{ color: t.vulnerable_count > 0 ? C.red : C.green }}>
+                      {t.vulnerable_count} / {t.total_payloads} flagged
+                    </span>
                   </div>
-                );
-              }
+                  {(t.results || []).filter(r => r.possible_vulnerability).map((r, k) => (
+                    <div key={k} style={{
+                      background: C.redDim, border: `1px solid ${C.red}33`,
+                      borderRadius: 3, padding: "5px 9px", marginBottom: 3,
+                      color: C.red, fontSize: 10,
+                    }}>⚠ {r.payload} → {r.status_code || r.error}</div>
+                  ))}
+                </div>
+              );
               return (
                 <div key={j} style={{
-                  display: "flex", justifyContent: "space-between",
-                  alignItems: "center", padding: "7px 14px",
-                  borderBottom: `1px solid ${C.border}22`,
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "7px 14px", borderBottom: `1px solid ${C.border}22`,
                   fontFamily: mono, fontSize: 11,
                 }}>
                   <span style={{ color: C.textDim }}>{t.test}</span>
                   <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
                     {t.status_code && (
-                      <span style={{ color: C.textMuted }}>
-                        HTTP {t.status_code}
-                      </span>
+                      <span style={{ color: C.textMuted }}>HTTP {t.status_code}</span>
                     )}
                     {t.error && (
                       <span style={{ color: C.red, fontSize: 10 }}>
@@ -717,8 +754,7 @@ function TestResults({ results = [] }) {
                     )}
                     <Pill
                       label={t.passed ? "PASS" : "FAIL"}
-                      color={t.passed ? C.green : C.red}
-                      small
+                      color={t.passed ? C.green : C.red} small
                     />
                   </span>
                 </div>
@@ -738,20 +774,13 @@ function PlannerView({ plan }) {
       No planner assessment available.
     </p>
   );
-
-  const riskColor = (level) =>
-    level === "CRITICAL" ? C.red
-      : level === "HIGH" ? C.red
-      : level === "MEDIUM" ? C.yellow : C.green;
-
+  const riskColor = (l) =>
+    l === "CRITICAL" || l === "HIGH" ? C.red : l === "MEDIUM" ? C.yellow : C.green;
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
-
-      {/* Risk summary */}
       <div style={{
         background: C.bg, border: `1px solid ${C.accentBorder}`,
-        borderLeft: `3px solid ${C.accent}`,
-        borderRadius: 4, padding: "12px 16px",
+        borderLeft: `3px solid ${C.accent}`, borderRadius: 4, padding: "12px 16px",
       }}>
         <div style={{
           fontFamily: mono, fontSize: 10, color: C.accent,
@@ -759,9 +788,7 @@ function PlannerView({ plan }) {
         }}>RISK SUMMARY</div>
         <div style={{
           fontFamily: sans, fontSize: 13, color: C.textDim, lineHeight: 1.7,
-        }}>
-          {plan.risk_summary}
-        </div>
+        }}>{plan.risk_summary}</div>
         {plan.auth_pattern_detected && (
           <div style={{ marginTop: 10 }}>
             <Pill
@@ -771,8 +798,6 @@ function PlannerView({ plan }) {
           </div>
         )}
       </div>
-
-      {/* High risk endpoints */}
       {plan.high_risk_endpoints?.length > 0 && (
         <div>
           <div style={{
@@ -781,8 +806,7 @@ function PlannerView({ plan }) {
           }}>HIGH RISK ENDPOINTS</div>
           {plan.high_risk_endpoints.map((ep, i) => (
             <div key={i} style={{
-              background: C.surfaceHigh,
-              border: `1px solid ${C.border}`,
+              background: C.surfaceHigh, border: `1px solid ${C.border}`,
               borderLeft: `3px solid ${riskColor(ep.risk_level)}`,
               borderRadius: 4, padding: "10px 14px", marginBottom: 8,
             }}>
@@ -807,16 +831,12 @@ function PlannerView({ plan }) {
               {ep.attack_vectors?.length > 0 && (
                 <div style={{
                   fontFamily: mono, fontSize: 10, color: C.textMuted, marginTop: 6,
-                }}>
-                  Vectors: {ep.attack_vectors.join(", ")}
-                </div>
+                }}>Vectors: {ep.attack_vectors.join(", ")}</div>
               )}
             </div>
           ))}
         </div>
       )}
-
-      {/* Business logic risks */}
       {plan.business_logic_risks?.length > 0 && (
         <div>
           <div style={{
@@ -843,17 +863,13 @@ function DeploymentView({ deployment }) {
       No deployment data available.
     </p>
   );
-
   const scoreColor = (score) => {
     if (!score || score === "N/A") return C.textMuted;
     const n = parseInt(score);
     return n >= 5 ? C.green : n >= 3 ? C.yellow : C.red;
   };
-
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-
-      {/* Score + status row */}
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
         <div style={{
           background: C.surfaceHigh, border: `1px solid ${C.border}`,
@@ -863,15 +879,12 @@ function DeploymentView({ deployment }) {
           <div style={{
             fontFamily: mono, fontSize: 28,
             color: scoreColor(deployment.security_score), fontWeight: 700,
-          }}>
-            {deployment.security_score || "N/A"}
-          </div>
+          }}>{deployment.security_score || "N/A"}</div>
           <div style={{
             fontFamily: mono, fontSize: 10, color: C.textMuted,
             textTransform: "uppercase", letterSpacing: "0.08em",
           }}>Security Score</div>
         </div>
-
         <div style={{
           background: C.surfaceHigh, border: `1px solid ${C.border}`,
           borderLeft: `3px solid ${deployment.status === "healthy" ? C.green : C.red}`,
@@ -879,12 +892,10 @@ function DeploymentView({ deployment }) {
         }}>
           <div style={{
             fontFamily: mono, fontSize: 13,
-            color: deployment.status === "healthy" ? C.green : C.red,
-            marginBottom: 2,
+            color: deployment.status === "healthy" ? C.green : C.red, marginBottom: 2,
           }}>
             <span style={{
-              display: "inline-block", width: 7, height: 7,
-              borderRadius: "50%",
+              display: "inline-block", width: 7, height: 7, borderRadius: "50%",
               background: deployment.status === "healthy" ? C.green : C.red,
               marginRight: 8,
               boxShadow: `0 0 5px ${deployment.status === "healthy" ? C.green : C.red}`,
@@ -898,14 +909,10 @@ function DeploymentView({ deployment }) {
           {deployment.latency_ms && (
             <div style={{
               fontFamily: mono, fontSize: 10, color: C.textMuted, marginTop: 4,
-            }}>
-              {deployment.latency_ms}ms latency
-            </div>
+            }}>{deployment.latency_ms}ms latency</div>
           )}
         </div>
       </div>
-
-      {/* Findings list */}
       {deployment.deployment_findings?.length > 0 && (
         <div>
           <div style={{
@@ -914,14 +921,11 @@ function DeploymentView({ deployment }) {
           }}>DEPLOYMENT FINDINGS</div>
           {deployment.deployment_findings.map((df, i) => {
             const isHeader = df.check?.startsWith("security_header");
-            const isCors   = df.check === "cors";
-            const isDocs   = df.check === "docs_exposure";
-            const color    = isHeader ? C.yellow : isCors ? C.red : isDocs ? C.yellow : C.red;
+            const color = isHeader ? C.yellow : df.check === "cors" ? C.red : C.yellow;
             return (
               <div key={i} style={{
-                display: "flex", gap: 10, padding: "8px 12px",
-                marginBottom: 4, background: C.bg,
-                border: `1px solid ${C.border}`,
+                display: "flex", gap: 10, padding: "8px 12px", marginBottom: 4,
+                background: C.bg, border: `1px solid ${C.border}`,
                 borderLeft: `3px solid ${color}`, borderRadius: 4,
               }}>
                 <span style={{ color, fontFamily: mono, fontSize: 11 }}>▲</span>
@@ -933,8 +937,6 @@ function DeploymentView({ deployment }) {
           })}
         </div>
       )}
-
-      {/* Security headers */}
       {deployment.security_headers && (
         <div>
           <div style={{
@@ -956,79 +958,63 @@ function DeploymentView({ deployment }) {
 }
 
 // ─── Report viewer ────────────────────────────────────────────────
-function ReportView({ report }) {
+function ReportView({ report, onRescan, specId }) {
   const [tab, setTab] = useState("security");
+  const s = report.summary || {};
+
+  const exportJSON = () => {
+    const blob = new Blob([JSON.stringify(report, null, 2)], {
+      type: "application/json",
+    });
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement("a");
+    a.href     = url;
+    a.download = `sentinel-report-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
 
   const tabs = [
-    { key: "security",   label: "Security" },
-    { key: "tests",      label: "API Tests" },
-    { key: "planner",    label: "Planner" },
+    { key: "security",   label: "Security"   },
+    { key: "tests",      label: "API Tests"  },
+    { key: "planner",    label: "Planner"    },
     { key: "deployment", label: "Deployment" },
     { key: "recs",       label: "Recommendations" },
     { key: "llm",        label: "AI Analysis" },
   ];
 
-  const s = report.summary || {};
-
   return (
     <div>
-      {/* Summary stat cards */}
-      <div style={{
-        display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap",
-      }}>
-        <StatCard
-          label="Critical"
-          value={s.critical_risks ?? 0}
-          color={s.critical_risks > 0 ? C.red : C.textMuted}
-        />
-        <StatCard
-          label="High"
-          value={s.high_risks ?? 0}
-          color={s.high_risks > 0 ? C.red : C.textMuted}
-        />
-        <StatCard
-          label="Medium"
-          value={s.medium_risks ?? 0}
-          color={s.medium_risks > 0 ? C.yellow : C.textMuted}
-        />
-        <StatCard
-          label="Low"
-          value={s.low_risks ?? 0}
-          color={C.green}
-        />
-        <StatCard
-          label="Tests Run"
-          value={s.total_tests_run}
-          color={C.accent}
-        />
-        <StatCard
-          label="Failed"
-          value={s.failed_tests}
-          color={s.failed_tests > 0 ? C.red : C.green}
-        />
-        <StatCard
-          label="Passed"
-          value={s.passed_tests}
-          color={C.green}
-        />
+      {/* Stat cards */}
+      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+        <StatCard label="Critical" value={s.critical_risks ?? 0}
+          color={s.critical_risks > 0 ? C.red : C.textMuted} />
+        <StatCard label="High" value={s.high_risks ?? 0}
+          color={s.high_risks > 0 ? C.red : C.textMuted} />
+        <StatCard label="Medium" value={s.medium_risks ?? 0}
+          color={s.medium_risks > 0 ? C.yellow : C.textMuted} />
+        <StatCard label="Low" value={s.low_risks ?? 0} color={C.green} />
+        <StatCard label="Tests Run" value={s.total_tests_run} color={C.accent} />
+        <StatCard label="Failed" value={s.failed_tests}
+          color={s.failed_tests > 0 ? C.red : C.green} />
+        <StatCard label="Passed" value={s.passed_tests} color={C.green} />
+
+        {/* Security score */}
         <div style={{
           background: C.surfaceHigh, border: `1px solid ${C.border}`,
           borderLeft: `3px solid ${
-            s.deployment_checks_ran
-              ? (s.deployment_security_score === "N/A" ? C.textMuted
-                : parseInt(s.deployment_security_score) >= 4 ? C.green : C.yellow)
-              : C.textMuted
+            !s.deployment_checks_ran ? C.textMuted
+              : parseInt(s.deployment_security_score) >= 4 ? C.green : C.yellow
           }`,
           borderRadius: 6, padding: "12px 16px", flex: 1, minWidth: 100,
         }}>
           <div style={{
             fontFamily: mono, fontSize: 24, fontWeight: 700,
-            color: s.deployment_checks_ran
-              ? (s.deployment_security_score === "N/A" ? C.textMuted
-                : parseInt(s.deployment_security_score) >= 4 ? C.green : C.yellow)
-              : C.textMuted,
+            color: !s.deployment_checks_ran ? C.textMuted
+              : parseInt(s.deployment_security_score) >= 4 ? C.green : C.yellow,
           }}>
-            {s.deployment_checks_ran ? (s.deployment_security_score || "N/A") : "N/A"}
+            {s.deployment_checks_ran
+              ? (s.deployment_security_score || "N/A") : "N/A"}
           </div>
           <div style={{
             fontFamily: mono, fontSize: 10, color: C.textMuted,
@@ -1060,25 +1046,27 @@ function ReportView({ report }) {
         )}
       </div>
 
-      {/* Test generation info bar */}
-      {report.test_generation?.test_cases_generated > 0 && (
-        <div style={{
-          background: C.accentDim, border: `1px solid ${C.accentBorder}`,
-          borderRadius: 4, padding: "7px 14px", marginBottom: 14,
-          fontFamily: mono, fontSize: 11, color: C.accent,
-          display: "flex", justifyContent: "space-between",
-        }}>
-          <span>
-            ◈ {report.test_generation.test_cases_generated} test cases generated
-            {report.test_generation.llm_used ? " via LLM" : " via rules"}
-          </span>
-          {report.deep_scan_performed && (
-            <span style={{ color: C.purple }}>
-              ◆ Deep scan performed
-            </span>
+      {/* Info bar + action buttons */}
+      <div style={{
+        display: "flex", justifyContent: "space-between", alignItems: "center",
+        background: C.accentDim, border: `1px solid ${C.accentBorder}`,
+        borderRadius: 4, padding: "7px 14px", marginBottom: 14,
+        fontFamily: mono, fontSize: 11,
+      }}>
+        <span style={{ color: C.accent }}>
+          {report.test_generation?.test_cases_generated > 0
+            ? `◈ ${report.test_generation.test_cases_generated} test cases · `
+            : ""}
+          {report.deep_scan_performed ? "◆ Deep scan · " : ""}
+          {s.total_security_findings} findings
+        </span>
+        <div style={{ display: "flex", gap: 8 }}>
+          {specId && onRescan && (
+            <Btn onClick={onRescan} variant="ghost" small>↺ Re-scan</Btn>
           )}
+          <Btn onClick={exportJSON} variant="subtle" small>↓ Export JSON</Btn>
         </div>
-      )}
+      </div>
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 3, marginBottom: -1, flexWrap: "wrap" }}>
@@ -1089,8 +1077,7 @@ function ReportView({ report }) {
             borderRadius: "4px 4px 0 0", cursor: "pointer",
             border: `1px solid ${C.border}`,
             borderBottom: tab === t.key
-              ? `1px solid ${C.surface}`
-              : `1px solid ${C.border}`,
+              ? `1px solid ${C.surface}` : `1px solid ${C.border}`,
             background: tab === t.key ? C.surface : C.bg,
             color: tab === t.key ? C.accent : C.textMuted,
           }}>{t.label}</button>
@@ -1101,24 +1088,16 @@ function ReportView({ report }) {
         background: C.surface, border: `1px solid ${C.border}`,
         borderRadius: "0 4px 4px 4px", padding: 20,
       }}>
-        {tab === "security" && (
-          <SecurityTable findings={report.security_findings} />
-        )}
-        {tab === "tests" && (
-          <TestResults results={report.api_test_results} />
-        )}
-        {tab === "planner" && (
-          <PlannerView plan={report.planner_assessment} />
-        )}
-        {tab === "deployment" && (
-          <DeploymentView deployment={report.deployment} />
-        )}
+        {tab === "security"   && <SecurityTable findings={report.security_findings} />}
+        {tab === "tests"      && <TestResults results={report.api_test_results} />}
+        {tab === "planner"    && <PlannerView plan={report.planner_assessment} />}
+        {tab === "deployment" && <DeploymentView deployment={report.deployment} />}
         {tab === "recs" && (
           <div>
             {!(report.recommendations || []).length
-              ? <p style={{
-                  fontFamily: mono, color: C.green, fontSize: 12,
-                }}>✓ No recommendations.</p>
+              ? <p style={{ fontFamily: mono, color: C.green, fontSize: 12 }}>
+                  ✓ No recommendations.
+                </p>
               : (report.recommendations || []).map((r, i) => (
                 <div key={i} style={{
                   display: "flex", gap: 10, padding: "10px 14px",
@@ -1128,8 +1107,8 @@ function ReportView({ report }) {
                 }}>
                   <span style={{ color: C.yellow }}>▲</span>
                   <span style={{
-                    fontFamily: sans, fontSize: 13, color: C.textDim,
-                    lineHeight: 1.6,
+                    fontFamily: sans, fontSize: 13,
+                    color: C.textDim, lineHeight: 1.6,
                   }}>{r}</span>
                 </div>
               ))
@@ -1138,14 +1117,18 @@ function ReportView({ report }) {
         )}
         {tab === "llm" && (
           report.llm_analysis
-            ? <pre style={{
-                fontFamily: mono, fontSize: 12, color: C.textDim,
-                lineHeight: 1.7, whiteSpace: "pre-wrap", margin: 0,
-              }}>{report.llm_analysis}</pre>
+            ? <div
+                style={{
+                  fontFamily: sans, fontSize: 13,
+                  color: C.textDim, lineHeight: 1.8,
+                }}
+                dangerouslySetInnerHTML={{
+                  __html: renderMarkdown(report.llm_analysis)
+                }}
+              />
             : <p style={{ fontFamily: mono, color: C.textMuted, fontSize: 12 }}>
-                Set <code style={{ color: C.accent }}>GROQ_API_KEY</code> or{" "}
-                <code style={{ color: C.accent }}>LLM_PROVIDER=ollama</code>{" "}
-                on the backend to enable AI analysis.
+                Set <code style={{ color: C.accent }}>GROQ_API_KEY</code> to enable
+                AI analysis.
               </p>
         )}
       </div>
@@ -1167,15 +1150,17 @@ export default function App() {
     }).catch(() => setAuthChecked(true));
   }, [apiKey]);
 
-  const [specText,     setSpecText]     = useState("");
-  const [specId,       setSpecId]       = useState(null);
-  const [file,         setFile]         = useState(null);
-  const [apiUrl,       setApiUrl]       = useState("");
-  const [report,       setReport]       = useState(null);
-  const [activeScanId, setActiveScanId] = useState(null);
-  const [loading,      setLoading]      = useState(false);
-  const [error,        setError]        = useState("");
-  const [sidebarKey,   setSidebarKey]   = useState(0);
+  const [specText,      setSpecText]      = useState("");
+  const [specId,        setSpecId]        = useState(null);
+  const [file,          setFile]          = useState(null);
+  const [apiUrl,        setApiUrl]        = useState("");
+  const [report,        setReport]        = useState(null);
+  const [activeScanId,  setActiveScanId]  = useState(null);
+  const [loading,       setLoading]       = useState(false);
+  const [streaming,     setStreaming]      = useState(false);
+  const [streamEvents,  setStreamEvents]  = useState([]);
+  const [error,         setError]         = useState("");
+  const [sidebarKey,    setSidebarKey]    = useState(0);
 
   const wrap = async (fn) => {
     setLoading(true); setError("");
@@ -1206,12 +1191,64 @@ export default function App() {
     setSpecId(data.id); setActiveScanId(data.id);
   });
 
-  const runScan = () => wrap(async () => {
-    const data = await apiFetch(`/api/run/${specId}`, { method: "POST" });
-    setReport(data.result);
-    setActiveScanId(specId);
-    setSidebarKey(k => k + 1);
-  });
+  // ── Streaming scan ────────────────────────────────────────────
+  const runScanStream = async (sid) => {
+    const id = sid || specId;
+    if (!id) return;
+
+    setStreaming(true);
+    setStreamEvents([]);
+    setReport(null);
+    setError("");
+
+    try {
+      const headers = {};
+      if (apiKey) headers["X-API-Key"] = apiKey;
+
+      const response = await fetch(`${BASE}/api/run/${id}/stream`, {
+        method: "POST", headers,
+      });
+
+      if (response.status === 401) { setNeedsAuth(true); return; }
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+      const reader  = response.body.getReader();
+      const decoder = new TextDecoder();
+      const events  = [];
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const text  = decoder.decode(value, { stream: true });
+        const lines = text.split("\n").filter(l => l.startsWith("data: "));
+
+        for (const line of lines) {
+          const raw = line.slice(6).trim();
+          if (raw === "[DONE]") break;
+          try {
+            const ev = JSON.parse(raw);
+            events.push(ev);
+            setStreamEvents([...events]);
+
+            if (ev.agent === "report" && ev.status === "completed") {
+              setReport(ev.data.report);
+              setActiveScanId(id);
+              setSidebarKey(k => k + 1);
+            }
+            if (ev.agent === "error") {
+              setError(ev.data?.message || "Scan failed");
+            }
+          } catch { /* ignore malformed SSE lines */ }
+        }
+      }
+    } catch (e) {
+      if (e.message !== "AUTH_FAILED") setError(e.message || "Scan failed");
+    } finally {
+      setStreaming(false);
+      setStreamEvents([]);
+    }
+  };
 
   const scanUrl = () => wrap(async () => {
     if (!apiUrl) throw new Error("Enter a URL");
@@ -1219,15 +1256,13 @@ export default function App() {
       method: "POST",
       body: JSON.stringify({ base_url: apiUrl }),
     });
-    // Handle both full scan and partial (baseline) results
     setReport(data.result || data);
     setActiveScanId(data.spec_id || null);
     setSidebarKey(k => k + 1);
   });
 
   const loadHistoryScan = async (scan) => {
-    setError("");
-    setActiveScanId(scan.id);
+    setError(""); setActiveScanId(scan.id);
     if (scan.status !== "completed") {
       setReport(null); setSpecId(scan.id); return;
     }
@@ -1238,13 +1273,8 @@ export default function App() {
   };
 
   if (!authChecked) return null;
-
   if (needsAuth && !apiKey) {
-    return (
-      <LoginScreen onAuth={(k) => {
-        setApiKey(k); setNeedsAuth(false);
-      }} />
-    );
+    return <LoginScreen onAuth={(k) => { setApiKey(k); setNeedsAuth(false); }} />;
   }
 
   return (
@@ -1274,29 +1304,24 @@ export default function App() {
             letterSpacing: "0.1em",
           }}>◈ {APP_NAME}</span>
           <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-            {loading && (
+            {(loading || streaming) && (
               <span style={{ fontFamily: mono, fontSize: 11, color: C.yellow }}>
-                ⟳ scanning…
+                ⟳ {streaming ? "streaming…" : "scanning…"}
               </span>
             )}
             {apiKey && (
-              <button
-                onClick={() => {
-                  sessionStorage.clear();
-                  setApiKey(""); setNeedsAuth(true);
-                }}
-                style={{
-                  fontFamily: mono, fontSize: 10, color: C.textMuted,
-                  background: "none", border: "none", cursor: "pointer",
-                }}
-              >sign out</button>
+              <button onClick={() => {
+                sessionStorage.clear(); setApiKey(""); setNeedsAuth(true);
+              }} style={{
+                fontFamily: mono, fontSize: 10, color: C.textMuted,
+                background: "none", border: "none", cursor: "pointer",
+              }}>sign out</button>
             )}
           </div>
         </div>
 
         <div style={{ flex: 1, overflowY: "auto", padding: "24px 28px" }}>
 
-          {/* Error banner */}
           {error && (
             <div style={{
               background: C.redDim, border: `1px solid ${C.red}44`,
@@ -1307,8 +1332,7 @@ export default function App() {
 
           {/* Input panels */}
           <div style={{
-            display: "grid",
-            gridTemplateColumns: "1fr 1fr 1fr",
+            display: "grid", gridTemplateColumns: "1fr 1fr 1fr",
             gap: 14, marginBottom: 20,
           }}>
             {/* Paste JSON */}
@@ -1331,9 +1355,8 @@ export default function App() {
                     borderRadius: 4, padding: 10, width: "100%",
                     resize: "vertical", outline: "none",
                     boxSizing: "border-box", marginBottom: 10,
-                  }}
-                />
-                <Btn onClick={uploadSpec} disabled={loading || !specText}>
+                  }} />
+                <Btn onClick={uploadSpec} disabled={loading || streaming || !specText}>
                   Upload JSON
                 </Btn>
               </div>
@@ -1356,16 +1379,14 @@ export default function App() {
                 }}>
                   <input type="file" accept=".json,.yaml,.yml"
                     onChange={e => setFile(e.target.files[0])}
-                    style={{ display: "none" }} id="fup"
-                  />
+                    style={{ display: "none" }} id="fup" />
                   <label htmlFor="fup" style={{
-                    fontFamily: mono, fontSize: 11, color: C.accent,
-                    cursor: "pointer",
+                    fontFamily: mono, fontSize: 11, color: C.accent, cursor: "pointer",
                   }}>
                     {file ? file.name : "Click to select .json / .yaml"}
                   </label>
                 </div>
-                <Btn onClick={uploadFile} disabled={loading || !file}>
+                <Btn onClick={uploadFile} disabled={loading || streaming || !file}>
                   Upload File
                 </Btn>
               </div>
@@ -1382,13 +1403,10 @@ export default function App() {
                 textTransform: "uppercase", letterSpacing: "0.08em",
               }}>Scan API URL</div>
               <div style={{ padding: 14 }}>
-                <Input
-                  value={apiUrl}
-                  onChange={e => setApiUrl(e.target.value)}
+                <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)}
                   placeholder="https://api.yourcompany.com"
-                  style={{ marginBottom: 10 }}
-                />
-                <Btn onClick={scanUrl} disabled={loading || !apiUrl}>
+                  style={{ marginBottom: 10 }} />
+                <Btn onClick={scanUrl} disabled={loading || streaming || !apiUrl}>
                   Scan URL
                 </Btn>
               </div>
@@ -1396,7 +1414,7 @@ export default function App() {
           </div>
 
           {/* Run scan banner */}
-          {specId && !report && (
+          {specId && !report && !streaming && (
             <div style={{
               background: C.accentDim, border: `1px solid ${C.accentBorder}`,
               borderRadius: 6, padding: "12px 18px",
@@ -1407,22 +1425,35 @@ export default function App() {
               <span style={{ color: C.accent }}>
                 Spec uploaded — ID: <code>{specId}</code>
               </span>
-              <Btn onClick={runScan} disabled={loading}>
+              <Btn onClick={() => runScanStream(specId)} disabled={streaming}>
                 ▶ Run Security Scan
               </Btn>
             </div>
           )}
 
+          {/* Streaming progress */}
+          {streaming && streamEvents.length > 0 && (
+            <ScanProgress events={streamEvents} />
+          )}
+
           {/* Report */}
-          {report && <ReportView report={report} />}
+          {report && !streaming && (
+            <ReportView
+              report={report}
+              specId={specId}
+              onRescan={() => runScanStream(specId)}
+            />
+          )}
 
           {/* Empty state */}
-          {!report && !specId && (
+          {!report && !specId && !streaming && (
             <div style={{ textAlign: "center", marginTop: 60 }}>
               <div style={{
                 fontFamily: mono, fontSize: 36, color: C.border, marginBottom: 12,
               }}>◈</div>
-              <div style={{ fontFamily: mono, fontSize: 13, color: C.textMuted }}>
+              <div style={{
+                fontFamily: mono, fontSize: 13, color: C.textMuted,
+              }}>
                 Upload a spec or enter an API URL to begin scanning
               </div>
             </div>
@@ -1440,6 +1471,10 @@ export default function App() {
           background: ${C.accentDim}; color: ${C.accent};
           padding: 1px 5px; border-radius: 3px;
           font-family: ${mono}; font-size: 0.9em;
+        }
+        @keyframes pulse {
+          0%, 100% { opacity: 1; }
+          50% { opacity: 0.4; }
         }
       `}</style>
     </div>
