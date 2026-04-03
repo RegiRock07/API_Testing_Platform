@@ -4,4 +4,5 @@ requests
 pyyaml
 python-multipart
 langgraph
-anthropic
+groq
+python-dotenv
