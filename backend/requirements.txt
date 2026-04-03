@@ -7,3 +7,4 @@ langgraph
 groq
 python-dotenv
 google-genai
+firebase-admin
