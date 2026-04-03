@@ -93,6 +93,12 @@ def _call_groq(messages: list) -> str:
     except Exception as e:
         raise LLMError(f"Failed to initialise Groq client: {e}")
 
+    # Rough token estimate — 1 token ≈ 4 chars
+    estimated_tokens = sum(len(m.get("content", "")) for m in messages) // 4
+    if estimated_tokens > 6000:
+        logger.warning(f"[LLM] Prompt too large (~{estimated_tokens} tokens), truncating not supported — using fallback")
+        raise LLMError(f"Prompt too large (~{estimated_tokens} tokens). Reduce endpoint count.")
+
     for model in [GROQ_MODEL_PRIMARY, GROQ_MODEL_FALLBACK]:
         try:
             logger.info(f"[LLM] Attempting Groq call with model: {model}")
@@ -156,34 +162,78 @@ def _call_ollama(messages: list) -> str:
     except Exception as e:
         raise LLMError(f"Ollama call failed: {e}")
 
+def _call_gemini(messages: list) -> str:
+    """
+    Call Google Gemini API using the new google-genai SDK.
+    Free tier via AI Studio — 1,500 requests/day.
+    """
+    from google import genai
+    from google.genai import types
 
-# ─────────────────────────────────────────────────────────────────
-# Public API
-# ─────────────────────────────────────────────────────────────────
+    api_key = os.getenv("GOOGLE_API_KEY", "")
+    if not api_key:
+        raise LLMError(
+            "GOOGLE_API_KEY is not set. "
+            "Get a free key at aistudio.google.com."
+        )
+
+    try:
+        client = genai.Client(api_key=api_key)
+    except Exception as e:
+        raise LLMError(f"Failed to initialise Gemini client: {e}")
+
+    # Separate system message from conversation
+    system_msg = ""
+    prompt = ""
+    for m in messages:
+        if m["role"] == "system":
+            system_msg = m["content"]
+        else:
+            prompt += m["content"]
+
+    if system_msg:
+        prompt = f"{system_msg}\n\n{prompt}"
+
+    try:
+        response = client.models.generate_content(
+            model="gemini-1.5-flash-latest",
+            contents=prompt,
+        )
+        content = response.text
+        if not content:
+            raise LLMError("Gemini returned empty response")
+        logger.info("[LLM] Gemini gemini-2.0-flash success")
+        return content
+
+    except Exception as e:
+        raise LLMError(f"Gemini call failed: {e}")
 
 def call_llm(messages: list) -> str:
-    """
-    Send a chat-completion request to the configured LLM provider.
-
-    Args:
-        messages: list of dicts, e.g.
-            [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
-
-    Returns:
-        str: the LLM's response text.
-
-    Raises:
-        LLMError: if the call fails for any reason.
-                  Callers should catch this and fall back to rule-based logic.
-    """
     provider = os.getenv("LLM_PROVIDER", "groq").lower().strip()
 
     if provider == "groq":
-        return _call_groq(messages)
+        # Try Groq first, auto-fallback to Gemini if rate limited
+        try:
+            return _call_groq(messages)
+        except LLMError as e:
+            google_key = os.getenv("GOOGLE_API_KEY", "")
+            if google_key and (
+                "rate_limit" in str(e).lower() or
+                "429" in str(e) or
+                "all groq models failed" in str(e).lower()
+            ):
+                logger.warning(f"[LLM] Groq rate limited, falling back to Gemini: {e}")
+                return _call_gemini(messages)
+            raise
+
+    elif provider == "gemini":
+        return _call_gemini(messages)
+
     elif provider == "ollama":
         return _call_ollama(messages)
+
     else:
         raise LLMError(
             f"Unknown LLM_PROVIDER '{provider}'. "
-            "Supported values: 'groq' (default), 'ollama'."
+            "Supported values: 'groq' (default), 'gemini', 'ollama'."
         )

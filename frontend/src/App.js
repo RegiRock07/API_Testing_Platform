@@ -136,29 +136,93 @@ function Badge({ label, color, bg, border, small }) {
   );
 }
 
-function StatCard({ label, value, color, sub }) {
+function SeveritySummary({ summary: s, deepScanPerformed, deepScanCount }) {
+  const bars = [
+    { label: "Critical", value: s.critical_risks ?? 0, color: C.red },
+    { label: "High",     value: s.high_risks    ?? 0, color: C.red },
+    { label: "Medium",   value: s.medium_risks  ?? 0, color: C.yellow },
+    { label: "Low",      value: s.low_risks     ?? 0, color: C.green },
+  ];
+  const max = Math.max(...bars.map(b => b.value), 1);
+
   return (
     <div style={{
-      background: C.surface,
-      border: `1px solid ${C.border}`,
-      borderRadius: 10,
-      padding: "16px 20px",
-      flex: 1, minWidth: 100,
-      boxShadow: C.shadow,
+      display: "grid",
+      gridTemplateColumns: "1fr 1fr",
+      gap: 14,
+      marginBottom: 20,
     }}>
       <div style={{
-        fontFamily: mono, fontSize: 28, fontWeight: 700,
-        color: color, lineHeight: 1,
-      }}>{value ?? "—"}</div>
+        background: C.surface, border: `1px solid ${C.border}`,
+        borderRadius: 10, padding: "18px 20px", boxShadow: C.shadow,
+      }}>
+        <div style={{
+          fontFamily: sans, fontSize: 11, fontWeight: 600,
+          color: C.textFaint, textTransform: "uppercase",
+          letterSpacing: "0.06em", marginBottom: 14,
+        }}>Security findings</div>
+        {bars.map(({ label, value, color }) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <span style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, width: 52, flexShrink: 0 }}>
+              {label}
+            </span>
+            <div style={{ flex: 1, height: 6, background: C.bg, borderRadius: 3, overflow: "hidden" }}>
+              <div style={{
+                height: "100%",
+                width: `${Math.round((value / max) * 100)}%`,
+                background: color,
+                borderRadius: 3,
+                transition: "width 0.5s cubic-bezier(0.4,0,0.2,1)",
+                minWidth: value > 0 ? 6 : 0,
+              }} />
+            </div>
+            <span style={{
+              fontFamily: mono, fontSize: 12, fontWeight: 600,
+              color: value > 0 ? color : C.textFaint,
+              width: 16, textAlign: "right", flexShrink: 0,
+            }}>{value}</span>
+          </div>
+        ))}
+      </div>
+
       <div style={{
-        fontFamily: sans, fontSize: 12, color: C.textMuted,
-        marginTop: 5, fontWeight: 500,
-      }}>{label}</div>
-      {sub && (
-        <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint, marginTop: 3 }}>
-          {sub}
-        </div>
-      )}
+        background: C.surface, border: `1px solid ${C.border}`,
+        borderRadius: 10, padding: "18px 20px", boxShadow: C.shadow,
+        display: "grid", gridTemplateColumns: "1fr 1fr",
+        gap: 12, alignContent: "start",
+      }}>
+        {[
+          { label: "Tests run",      value: s.total_tests_run },
+          { label: "Passed",         value: s.passed_tests    },
+          { label: "Failed",         value: s.failed_tests    },
+          { label: "Security score", value: s.deployment_checks_ran ? (s.deployment_security_score || "N/A") : "N/A" },
+        ].map(({ label, value }) => (
+          <div key={label} style={{
+            background: C.surfaceHigh, border: `1px solid ${C.border}`,
+            borderRadius: 8, padding: "10px 12px",
+          }}>
+            <div style={{ fontFamily: mono, fontSize: 20, fontWeight: 700, color: C.text, lineHeight: 1 }}>
+              {value ?? "—"}
+            </div>
+            <div style={{ fontFamily: sans, fontSize: 11, color: C.textMuted, marginTop: 5 }}>
+              {label}
+            </div>
+          </div>
+        ))}
+        {deepScanPerformed && (
+          <div style={{
+            background: C.purpleLight, border: `1px solid ${C.purpleBorder}`,
+            borderRadius: 8, padding: "10px 12px", gridColumn: "span 2",
+          }}>
+            <div style={{ fontFamily: mono, fontSize: 20, fontWeight: 700, color: C.purple, lineHeight: 1 }}>
+              {deepScanCount ?? 0}
+            </div>
+            <div style={{ fontFamily: sans, fontSize: 11, color: C.purple, marginTop: 5 }}>
+              PoC exploits generated
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
@@ -416,7 +480,7 @@ function LoginScreen({ onAuth }) {
 }
 
 // ─── History Sidebar ──────────────────────────────────────────────
-function HistorySidebar({ apiFetch, onSelect, activeId }) {
+function HistorySidebar({ apiFetch, onSelect, activeId, collapsed, onToggle }) {
   const [scans,   setScans]   = useState([]);
   const [loading, setLoading] = useState(false);
   const [search,  setSearch]  = useState("");
@@ -445,64 +509,79 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
 
   return (
     <div style={{
-      width: 260, minWidth: 260,
+      width: collapsed ? 48 : 260,
+      minWidth: collapsed ? 48 : 260,
       background: C.sidebar,
       borderRight: `1px solid ${C.border}`,
       display: "flex", flexDirection: "column",
       height: "100vh", overflow: "hidden",
+      transition: "width 0.2s cubic-bezier(0.4,0,0.2,1), min-width 0.2s cubic-bezier(0.4,0,0.2,1)",
     }}>
       {/* Sidebar header */}
       <div style={{
-        padding: "16px 16px 12px",
+        padding: collapsed ? "12px 0" : "16px 16px 12px",
         borderBottom: `1px solid ${C.border}`,
+        display: "flex", flexDirection: "column",
+        alignItems: collapsed ? "center" : "stretch",
       }}>
         <div style={{
           display: "flex", alignItems: "center",
-          justifyContent: "space-between", marginBottom: 12,
+          justifyContent: collapsed ? "center" : "space-between",
+          marginBottom: collapsed ? 0 : 12,
         }}>
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8,
-          }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <div style={{
               width: 28, height: 28, borderRadius: 8,
-              background: C.accentLight,
-              border: `1px solid ${C.accentBorder}`,
+              background: C.accentLight, border: `1px solid ${C.accentBorder}`,
               display: "flex", alignItems: "center", justifyContent: "center",
               fontSize: 14, color: C.accent, flexShrink: 0,
-            }}>◈</div>
-            <span style={{
-              fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text,
-            }}>{APP_NAME}</span>
+              cursor: "pointer",
+            }} onClick={onToggle}>◈</div>
+            {!collapsed && (
+              <span style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>
+                {APP_NAME}
+              </span>
+            )}
           </div>
-          <button onClick={refresh} style={{
-            fontFamily: mono, fontSize: 14, color: C.textMuted,
-            background: "none", border: "none", cursor: "pointer",
-            padding: "2px 4px", borderRadius: 4,
-            transition: "color 0.15s",
-          }}>↻</button>
+          {!collapsed && (
+            <div style={{ display: "flex", gap: 4 }}>
+              <button onClick={refresh} style={{
+                fontFamily: mono, fontSize: 14, color: C.textMuted,
+                background: "none", border: "none", cursor: "pointer",
+                padding: "2px 4px", borderRadius: 4,
+              }}>↻</button>
+              <button onClick={onToggle} style={{
+                fontFamily: mono, fontSize: 14, color: C.textMuted,
+                background: "none", border: "none", cursor: "pointer",
+                padding: "2px 4px", borderRadius: 4,
+              }}>←</button>
+            </div>
+          )}
         </div>
-        <input value={search} onChange={e => setSearch(e.target.value)}
-          placeholder="Filter scans…"
-          style={{
-            fontFamily: sans, fontSize: 12, background: C.sidebarBg,
-            color: C.text, border: `1px solid ${C.border}`, borderRadius: 7,
-            padding: "7px 10px", width: "100%", outline: "none",
-            boxSizing: "border-box",
-          }} />
+        {!collapsed && (
+          <input value={search} onChange={e => setSearch(e.target.value)}
+            placeholder="Filter scans…"
+            style={{
+              fontFamily: sans, fontSize: 12, background: C.sidebarBg,
+              color: C.text, border: `1px solid ${C.border}`, borderRadius: 7,
+              padding: "7px 10px", width: "100%", outline: "none",
+              boxSizing: "border-box",
+            }} />
+        )}
       </div>
 
-      <div style={{
-        padding: "6px 10px", borderBottom: `1px solid ${C.border}`,
-      }}>
-        <span style={{
-          fontFamily: sans, fontSize: 11, color: C.textFaint,
-          textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600,
-        }}>
-          Scan history {scans.length > 0 && `· ${scans.length}`}
-        </span>
-      </div>
+      {!collapsed && (
+        <div style={{ padding: "6px 10px", borderBottom: `1px solid ${C.border}` }}>
+          <span style={{
+            fontFamily: sans, fontSize: 11, color: C.textFaint,
+            textTransform: "uppercase", letterSpacing: "0.06em", fontWeight: 600,
+          }}>
+            Scan history {scans.length > 0 && `· ${scans.length}`}
+          </span>
+        </div>
+      )}
 
-      <div style={{ flex: 1, overflowY: "auto" }}>
+      <div style={{ flex: 1, overflowY: "auto", display: collapsed ? "none" : "block" }}>
         {filtered.length === 0 && !loading && (
           <div style={{
             padding: "32px 16px", textAlign: "center",
@@ -556,15 +635,17 @@ function HistorySidebar({ apiFetch, onSelect, activeId }) {
         })}
       </div>
 
-      <div style={{
-        padding: "10px 14px",
-        borderTop: `1px solid ${C.border}`,
-        background: C.sidebarBg,
-      }}>
-        <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint }}>
-          {BASE.replace(/https?:\/\//, "")}
+      {!collapsed && (
+        <div style={{
+          padding: "10px 14px",
+          borderTop: `1px solid ${C.border}`,
+          background: C.sidebarBg,
+        }}>
+          <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint }}>
+            {BASE.replace(/https?:\/\//, "")}
+          </div>
         </div>
-      </div>
+      )}
     </div>
   );
 }
@@ -1123,7 +1204,79 @@ function DeploymentView({ deployment }) {
     </div>
   );
 }
+function ScanHeader({ report }) {
+  const plan = report.planner_assessment || {};
+  const dep  = report.deployment || {};
+  const findings = report.security_findings || [];
+  const worst =
+    findings.some(f => f.severity === "CRITICAL") ? { label: "Critical", color: C.red } :
+    findings.some(f => f.severity === "HIGH")     ? { label: "High risk", color: C.red } :
+    findings.some(f => f.severity === "MEDIUM")   ? { label: "Medium risk", color: C.yellow } :
+    findings.length > 0                           ? { label: "Low risk", color: C.green } :
+                                                    { label: "Clean", color: C.green };
 
+  return (
+    <div style={{
+      background: C.surface, border: `1px solid ${C.border}`,
+      borderRadius: 10, padding: "16px 20px",
+      marginBottom: 20, boxShadow: C.shadow,
+      display: "flex", alignItems: "center",
+      justifyContent: "space-between", gap: 16,
+    }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+        <div style={{
+          width: 40, height: 40, borderRadius: 10,
+          background: C.accentLight, border: `1px solid ${C.accentBorder}`,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          fontSize: 18, color: C.accent, flexShrink: 0,
+        }}>⊘</div>
+        <div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+            <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>
+              {plan.title || "API Scan Report"}
+            </span>
+            {plan.auth_pattern_detected && (
+              <Badge
+                label={`Auth: ${plan.auth_pattern_detected}`}
+                color={plan.auth_pattern_detected === "none" ? C.red : C.green}
+                bg={plan.auth_pattern_detected === "none" ? C.redLight : C.greenLight}
+                border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder}
+                small
+              />
+            )}
+          </div>
+          <div style={{
+            display: "flex", gap: 14, alignItems: "center",
+            fontFamily: sans, fontSize: 12, color: C.textFaint,
+          }}>
+            {report.summary?.total_security_findings !== undefined && (
+              <span>{report.summary.total_security_findings} findings</span>
+            )}
+            {dep.status && (
+              <span style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                <span style={{
+                  width: 6, height: 6, borderRadius: "50%", display: "inline-block",
+                  background: dep.status === "healthy" ? C.green : C.red,
+                }} />
+                {dep.status}
+              </span>
+            )}
+            {dep.latency_ms && <span>{dep.latency_ms}ms</span>}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        <Badge
+          label={worst.label}
+          color={worst.color}
+          bg={`${worst.color}12`}
+          border={`${worst.color}30`}
+        />
+      </div>
+    </div>
+  );
+}
 // ─── Report View ──────────────────────────────────────────────────
 function ReportView({ report, onRescan, specId }) {
   const [tab, setTab] = useState("security");
@@ -1150,58 +1303,14 @@ function ReportView({ report, onRescan, specId }) {
 
   return (
     <div>
+
+      <ScanHeader report={report} />
       {/* Stat cards */}
-      <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-        <StatCard label="Critical" value={s.critical_risks ?? 0}
-          color={s.critical_risks > 0 ? C.red : C.textFaint} />
-        <StatCard label="High" value={s.high_risks ?? 0}
-          color={s.high_risks > 0 ? C.red : C.textFaint} />
-        <StatCard label="Medium" value={s.medium_risks ?? 0}
-          color={s.medium_risks > 0 ? C.yellow : C.textFaint} />
-        <StatCard label="Low" value={s.low_risks ?? 0}
-          color={C.green} />
-        <StatCard label="Tests Run" value={s.total_tests_run} color={C.accent} />
-        <StatCard label="Failed" value={s.failed_tests}
-          color={s.failed_tests > 0 ? C.red : C.green} />
-        <StatCard label="Passed" value={s.passed_tests} color={C.green} />
-
-        {/* Security score */}
-        <div style={{
-          background: C.surface, border: `1px solid ${C.border}`,
-          borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 100,
-          boxShadow: C.shadow,
-        }}>
-          <div style={{
-            fontFamily: mono, fontSize: 28, fontWeight: 700, lineHeight: 1,
-            color: !s.deployment_checks_ran ? C.textFaint
-              : parseInt(s.deployment_security_score) >= 4 ? C.green : C.yellow,
-          }}>
-            {s.deployment_checks_ran ? (s.deployment_security_score || "N/A") : "N/A"}
-          </div>
-          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 5, fontWeight: 500 }}>
-            Security Score
-          </div>
-          {!s.deployment_checks_ran && (
-            <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint, marginTop: 3 }}>unreachable</div>
-          )}
-        </div>
-
-        {/* Deep scan badge */}
-        {report.deep_scan_performed && (
-          <div style={{
-            background: C.purpleLight, border: `1px solid ${C.purpleBorder}`,
-            borderRadius: 10, padding: "16px 20px", flex: 1, minWidth: 100,
-            boxShadow: C.shadow,
-          }}>
-            <div style={{ fontFamily: mono, fontSize: 28, fontWeight: 700, color: C.purple, lineHeight: 1 }}>
-              {report.deep_scan_summary?.findings_enriched ?? 0}
-            </div>
-            <div style={{ fontFamily: sans, fontSize: 12, color: C.purple, marginTop: 5, fontWeight: 500 }}>
-              PoC Generated
-            </div>
-          </div>
-        )}
-      </div>
+      <SeveritySummary
+        summary={s}
+        deepScanPerformed={report.deep_scan_performed}
+        deepScanCount={report.deep_scan_summary?.findings_enriched}
+      />
 
       {/* Info bar */}
       <div style={{
@@ -1357,6 +1466,7 @@ export default function App() {
   const [streamEvents, setStreamEvents] = useState([]);
   const [error,        setError]        = useState("");
   const [sidebarKey,   setSidebarKey]   = useState(0);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const wrap = async (fn) => {
     setLoading(true); setError("");
@@ -1497,6 +1607,8 @@ export default function App() {
         apiFetch={apiFetch}
         onSelect={loadHistoryScan}
         activeId={activeScanId}
+        collapsed={sidebarCollapsed}
+        onToggle={() => setSidebarCollapsed(c => !c)}
       />
 
       <div style={{

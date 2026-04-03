@@ -32,7 +32,7 @@ class DeepScanAgent:
         priority_findings = [
             f for f in findings
             if f.get("severity") in ("CRITICAL", "HIGH", "MEDIUM")
-        ][:5]
+        ][:2]
 
         if not priority_findings:
             return {

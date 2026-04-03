@@ -181,7 +181,7 @@ Do not add any text before or after the JSON array."""
         all_cases = []
         llm_used  = False
 
-        for endpoint in endpoints:
+        for endpoint in endpoints[:3]:
             cases = self._generate_for_endpoint(endpoint, endpoints)
             # Mark whether any LLM cases came through
             if any(c.get("category") not in ("positive", "negative") for c in cases):

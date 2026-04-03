@@ -13,7 +13,6 @@ logger = logging.getLogger(__name__)
 # Fallback: used automatically if primary is unavailable
 GROQ_MODEL_PRIMARY  = "llama-3.3-70b-versatile"
 GROQ_MODEL_FALLBACK = "llama-3.1-8b-instant"
-
 # Allow override via env var (e.g. for testing a specific model)
 GROQ_MODEL  = os.getenv("GROQ_MODEL", GROQ_MODEL_PRIMARY)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

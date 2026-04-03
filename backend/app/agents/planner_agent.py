@@ -126,6 +126,9 @@ class PlannerAgent:
 
     def run(self, parsed_data: dict) -> dict:
         endpoints = parsed_data.get("endpoints", [])
+        high_risk = [e for e in endpoints if "{" in e["path"] or e["method"] in ("POST", "PUT", "DELETE")]
+        others    = [e for e in endpoints if e not in high_risk]
+        priority_endpoints = (high_risk + others)[:5]
         title     = parsed_data.get("title", "Unknown API")
         version   = parsed_data.get("version", "Unknown")
         base_url  = parsed_data.get("base_url", "")
@@ -141,8 +144,8 @@ class PlannerAgent:
 API Title: {title}
 Version: {version}
 Base URL: {base_url}
-Endpoints ({len(endpoints)} total):
-{json.dumps(endpoints, indent=2)}
+Endpoints ({len(endpoints)} total, showing {len(priority_endpoints)} highest risk):
+{json.dumps(priority_endpoints, indent=2)}
 
 Respond ONLY with a valid JSON object matching this exact structure:
 {{

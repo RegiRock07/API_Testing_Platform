@@ -59,8 +59,12 @@ async def run_agents_stream(spec_id: str):
             yield sse("planner", "running")
             await asyncio.sleep(0)
             try:
-                planner_result = PlannerAgent().run(parsed_data)
-            except Exception as e:
+                loop = asyncio.get_event_loop()
+                planner_result = await asyncio.wait_for(
+                    loop.run_in_executor(None, PlannerAgent().run, parsed_data),
+                    timeout=60.0
+                )
+            except (asyncio.TimeoutError, Exception) as e:
                 planner_result = {"agent": "planner", "status": "error", "plan": {}}
                 print(f"[Stream] Planner error: {e}")
             yield sse("planner", "completed", {
@@ -74,11 +78,15 @@ async def run_agents_stream(spec_id: str):
             yield sse("test_generation", "running")
             await asyncio.sleep(0)
             try:
-                test_gen_result = TestGeneratorAgent().run(
-                    parsed_data,
-                    planner_result=planner_result,
+                loop = asyncio.get_event_loop()
+                test_gen_result = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        lambda: TestGeneratorAgent().run(parsed_data, planner_result=planner_result)
+                    ),
+                    timeout=60.0
                 )
-            except Exception as e:
+            except (asyncio.TimeoutError, Exception) as e:
                 test_gen_result = {
                     "agent": "test_generation", "status": "error",
                     "llm_used": False, "test_cases_generated": 0,
@@ -116,7 +124,17 @@ async def run_agents_stream(spec_id: str):
             yield sse("api_testing", "running")
             await asyncio.sleep(0)
             try:
-                api_test_result = APITestingAgent().run(parsed_data)
+                loop = asyncio.get_event_loop()
+                api_test_result = await asyncio.wait_for(
+                    loop.run_in_executor(None, APITestingAgent().run, parsed_data),
+                    timeout=30.0
+                )
+            except asyncio.TimeoutError:
+                api_test_result = {
+                    "agent": "api_testing", "status": "timeout",
+                    "results": [], "note": "API testing timed out after 30s"
+                }
+                print("[Stream] APITesting timed out")
             except Exception as e:
                 api_test_result = {
                     "agent": "api_testing", "status": "error", "results": []
@@ -277,8 +295,16 @@ Respond in plain English. Be specific and actionable."""
             yield sse("error", "failed", {"message": str(e)})
             yield "data: [DONE]\n\n"
 
+    async def safe_generate():
+        try:
+            async for chunk in generate():
+                yield chunk
+        except Exception as e:
+            yield sse("error", "failed", {"message": str(e)})
+            yield "data: [DONE]\n\n"
+
     return StreamingResponse(
-        generate(),
+        safe_generate(),
         media_type="text/event-stream",
         headers={
             "Cache-Control":    "no-cache",
