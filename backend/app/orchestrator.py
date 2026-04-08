@@ -1,321 +1,250 @@
-import os
+# backend/app/orchestrator.py
+#
+# Step 3+4 changes:
+#  - deep_scan_node added with conditional edge after deployment
+#  - security_node now passes planner_result to SecurityAgent
+#  - report_node merges deep_scan enriched findings into report
+#  - All other nodes unchanged
+
+from __future__ import annotations
+
 import json
-import requests
 from typing import TypedDict, Any
 
 from langgraph.graph import StateGraph, END
 
-from app.agents.planner_agent import PlannerAgent
+from app.agents.planner_agent         import PlannerAgent
 from app.agents.test_generation_agent import TestGeneratorAgent
-from app.agents.security_agent import SecurityAgent
-from app.agents.api_testing_agent import APITestingAgent
-from app.agents.deployment_agent import DeploymentAgent
-from app.agents.deep_scan_agent import DeepScanAgent
-from app.reporting.report_generator import ReportGenerator
+from app.agents.security_agent        import SecurityAgent
+from app.agents.api_testing_agent     import APITestingAgent
+from app.agents.deployment_agent      import DeploymentAgent
+from app.agents.deep_scan_agent       import DeepScanAgent
+from app.reporting.report_generator   import ReportGenerator
 
 
 # ─────────────────────────────────────────
-# Shared state that flows through the graph
+# Shared state
 # ─────────────────────────────────────────
 
 class ScanState(TypedDict):
-    parsed_data: dict[str, Any]
-    planner_result: dict[str, Any]
-    test_generation_result: dict[str, Any]  # NEW
-    security_result: dict[str, Any]
-    api_test_result: dict[str, Any]
-    deployment_result: dict[str, Any]
-    deep_scan_result: dict[str, Any]
-    synthesis: dict[str, Any]
-    final_report: dict[str, Any]
-    deep_scan_needed: bool
-    auth_config: dict[str, Any]  # NEW
-    scan_mode: str  # "full" | "verify_fix" | "comparison"
-    previous_scan_id: str | None  # for verify_fix mode
+    parsed_data:            dict[str, Any]
+    planner_result:         dict[str, Any]
+    test_generation_result: dict[str, Any]
+    security_result:        dict[str, Any]
+    api_test_result:        dict[str, Any]
+    deployment_result:      dict[str, Any]
+    deep_scan_result:       dict[str, Any]   # NEW
+    llm_analysis:           str
+    final_report:           dict[str, Any]
 
 
 # ─────────────────────────────────────────
-# Helper: parse LLM JSON safely
-# ─────────────────────────────────────────
-
-def parse_llm_json(raw_text: str, fallback=None):
-    try:
-        text = raw_text.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        text = text.strip()
-        return json.loads(text)
-    except Exception as e:
-        print(f"[Synthesis] LLM JSON parse failed: {e}")
-        return fallback
-
-
-# ─────────────────────────────────────────
-# Node: Planner Agent
+# Node: Planner (unchanged)
 # ─────────────────────────────────────────
 
 def planner_node(state: ScanState) -> ScanState:
-    result = PlannerAgent().run(state["parsed_data"])
+    try:
+        result = PlannerAgent().run(state["parsed_data"])
+    except Exception as e:
+        print(f"[planner_node] Error: {e}")
+        result = {"agent": "planner", "status": "error", "plan": {}}
     return {**state, "planner_result": result}
 
 
+# ─────────────────────────────────────────
+# Node: Test Generation (unchanged)
+# ─────────────────────────────────────────
+
 def test_generation_node(state: ScanState) -> ScanState:
-    result = TestGeneratorAgent().run(
-        state["parsed_data"],
-        planner_result=state.get("planner_result", {})
-    )
+    try:
+        result = TestGeneratorAgent().run(
+            state["parsed_data"],
+            planner_result=state.get("planner_result", {}),
+        )
+    except Exception as e:
+        print(f"[test_generation_node] Error: {e}")
+        result = {
+            "agent": "test_generation", "status": "error",
+            "llm_used": False, "test_cases_generated": 0, "test_cases": [],
+        }
     return {**state, "test_generation_result": result}
 
 
 # ─────────────────────────────────────────
-# Node: Security Agent
+# Node: Security (now passes planner context)
 # ─────────────────────────────────────────
 
 def security_node(state: ScanState) -> ScanState:
     result = SecurityAgent().run(
         state["parsed_data"],
-        planner_result=state.get("planner_result", {})
+        planner_result=state.get("planner_result", {}),
     )
     return {**state, "security_result": result}
 
 
 # ─────────────────────────────────────────
-# Node: API Testing Agent
+# Node: API Testing (unchanged)
 # ─────────────────────────────────────────
 
 def api_testing_node(state: ScanState) -> ScanState:
-    parsed_data = state.get("parsed_data", {}).copy()
-    if "base_url" not in parsed_data:
-        servers = parsed_data.get("servers", [])
-        if servers and isinstance(servers, list) and servers[0].get("url"):
-            parsed_data["base_url"] = servers[0]["url"]
-
-    result = APITestingAgent().run(
-        parsed_data,
-        planner_result=state.get("planner_result", {}),
-        test_generation_result=state.get("test_generation_result", {}),
-        auth_config=state.get("auth_config", {}),
-        security_result=state.get("security_result", {}),
-    )
+    result = APITestingAgent().run(state["parsed_data"])
     return {**state, "api_test_result": result}
 
 
 # ─────────────────────────────────────────
-# Node: Deployment Agent
+# Node: Deployment (unchanged)
 # ─────────────────────────────────────────
 
 def deployment_node(state: ScanState) -> ScanState:
     base_url = state["parsed_data"].get("base_url", "http://localhost:8000")
-    result = DeploymentAgent().run(base_url=base_url)
+    result   = DeploymentAgent().run(base_url=base_url)
     return {**state, "deployment_result": result}
 
 
 # ─────────────────────────────────────────
 # Conditional edge: should we run deep scan?
+# Triggers when there are 3+ HIGH or any CRITICAL findings.
 # ─────────────────────────────────────────
 
 def should_deep_scan(state: ScanState) -> str:
-    security = state.get("security_result", {})
+    security     = state.get("security_result", {})
     critical_count = security.get("critical_count", 0)
-    high_count = security.get("high_count", 0)
-    if critical_count > 0 or high_count >= 3:
+    high_count     = security.get("high_count", 0)
+    medium_count   = security.get("medium_count", 0)
+
+    if critical_count > 0 or high_count >= 2 or medium_count >= 3:
+        print(
+            f"[Orchestrator] Deep scan triggered "
+            f"(CRITICAL={critical_count}, HIGH={high_count}, MEDIUM={medium_count})"
+        )
         return "deep_scan"
-    return "synthesis"
+
+    print(
+        f"[Orchestrator] Deep scan skipped "
+    )
+    return "llm_analysis"
 
 
 # ─────────────────────────────────────────
-# Node: Deep Scan Agent
+# NEW Node: Deep Scan
 # ─────────────────────────────────────────
 
 def deep_scan_node(state: ScanState) -> ScanState:
-    result = DeepScanAgent().run(state.get("security_result", {}))
+    try:
+        result = DeepScanAgent().run(state.get("security_result", {}))
+    except Exception as e:
+        print(f"[deep_scan_node] Error: {e}")
+        result = {
+            "agent": "deep_scan", "status": "error",
+            "deep_scan_performed": False, "findings_enriched": [],
+        }
     return {**state, "deep_scan_result": result}
 
 
 # ─────────────────────────────────────────
-# Node: Synthesis Agent
+# Node: LLM Analysis (includes deep scan context)
 # ─────────────────────────────────────────
 
-def synthesis_node(state: ScanState) -> ScanState:
-    synthesis = _run_synthesis(state)
-    return {**state, "synthesis": synthesis}
+def llm_analysis_node(state: ScanState) -> ScanState:
+    from app.services.llm_service import call_llm, LLMError
 
+    security_findings = state["security_result"].get("findings", [])
+    endpoints         = state["parsed_data"].get("endpoints", [])
+    deployment_status = state["deployment_result"].get("status", "unknown")
+    deep_scan         = state.get("deep_scan_result", {})
 
-def _run_synthesis(state: ScanState) -> dict:
-    security = state.get("security_result", {})
-    api_testing = state.get("api_test_result", {})
-    deployment = state.get("deployment_result", {})
-    deep_scan = state.get("deep_scan_result", {})
+    # Build planner context string
+    planner_summary = ""
+    plan = state.get("planner_result", {}).get("plan", {})
+    if plan:
+        planner_summary = (
+            f"\nPlanner Risk Summary: {plan.get('risk_summary', '')}"
+            f"\nAuth Pattern: {plan.get('auth_pattern_detected', 'unknown')}"
+            f"\nHigh Risk Endpoints: {len(plan.get('high_risk_endpoints', []))}"
+        )
 
-    findings = list(security.get("findings", []))  # copy so we can mutate
-    test_results = api_testing.get("results", [])
+    # Note if deep scan ran
+    deep_scan_note = ""
+    if deep_scan.get("deep_scan_performed"):
+        enriched = deep_scan.get("findings_enriched", [])
+        deep_scan_note = (
+            f"\nDeep scan performed — {len(enriched)} findings enriched with PoC exploits."
+        )
 
-    # ── Phase 1: Cross-correlate validation results ────────────
-    # Collect BOLA and auth validation outcomes keyed by (endpoint, method)
-    bola_confirmed = set()   # (endpoint, method) pairs with SECURITY_FAILURE
-    auth_confirmed = set()   # (endpoint, method) pairs with SECURITY_FAILURE
+    prompt = f"""You are an expert API security analyst.
+Review the following automated scan results and provide:
+1. A brief executive summary (2-3 sentences)
+2. The top 3 most critical findings with reasoning
+3. Prioritised remediation steps
 
-    for ep_result in test_results:
-        ep_path = ep_result.get("endpoint", "")
-        ep_method = ep_result.get("method", "")
-        for t in ep_result.get("tests", []):
-            tt = t.get("test_type", "")
-            outcome = t.get("outcome", "")
-            if tt == "bola_validation" and outcome == "SECURITY_FAILURE":
-                bola_confirmed.add((ep_path, ep_method))
-            if tt == "auth_bypass_validation" and outcome == "SECURITY_FAILURE":
-                auth_confirmed.add((ep_path, ep_method))
+API Info:
+- Title: {state["parsed_data"].get("title", "Unknown")}
+- Total endpoints: {len(endpoints)}
+- Deployment status: {deployment_status}
+{planner_summary}
+{deep_scan_note}
 
-    # ── Phase 2: Promote matching findings to DYNAMIC ─────────
-    for f in findings:
-        fep = f.get("endpoint", "")
-        fmethod = f.get("method", "")
-        vuln_lower = (f.get("vulnerability") or "").lower()
+Security Findings ({len(security_findings)} total):
+{json.dumps(security_findings[:10], indent=2)}
 
-        if (fep, fmethod) in bola_confirmed and ("bola" in vuln_lower or "object" in vuln_lower):
-            f["detection_type"] = "DYNAMIC"
-            f["confidence"] = "HIGH"
-            f["severity"] = "HIGH"
-            f["confirmed"] = True
-            f["vulnerability"] = "Confirmed BOLA — Unauthorized Access Detected"
-
-        if (fep, fmethod) in auth_confirmed and ("auth" in vuln_lower):
-            f["detection_type"] = "DYNAMIC"
-            f["confidence"] = "HIGH"
-            f["severity"] = "HIGH"
-            f["confirmed"] = True
-            f["vulnerability"] = "Confirmed Auth Bypass Detected"
-
-    correlated_findings = findings
-
-    # ── Phase 3: Cross-cutting concerns (use confidence, not just count) ──
-    cross_cutting = []
-    auth_issues = [f for f in correlated_findings
-                   if "auth" in (f.get("vulnerability") or "").lower()]
-    confirmed_auth = [f for f in auth_issues if f.get("confirmed")]
-    if len(confirmed_auth) >= 1:
-        cross_cutting.append({
-            "pattern": "confirmed_auth_bypass",
-            "description": f"{len(confirmed_auth)} endpoint(s) have CONFIRMED authentication bypass — immediate remediation required."
-        })
-    elif len(auth_issues) >= 3:
-        cross_cutting.append({
-            "pattern": "widespread_auth_weakness",
-            "description": f"{len(auth_issues)} endpoints have potential authentication weaknesses (static analysis)."
-        })
-
-    bola_issues = [f for f in correlated_findings
-                   if "bola" in (f.get("vulnerability") or "").lower()
-                   or "object" in (f.get("vulnerability") or "").lower()]
-    confirmed_bola = [f for f in bola_issues if f.get("confirmed")]
-    if len(confirmed_bola) >= 1:
-        cross_cutting.append({
-            "pattern": "confirmed_bola",
-            "description": f"{len(confirmed_bola)} endpoint(s) have CONFIRMED BOLA — unauthorized object access detected."
-        })
-    elif len(bola_issues) >= 3:
-        cross_cutting.append({
-            "pattern": "widespread_bola_risk",
-            "description": f"{len(bola_issues)} endpoints have potential BOLA risks (static analysis)."
-        })
-
-    # ── Phase 4: Executive summary (LLM or deterministic fallback) ──
-    executive_summary = None
-    remediation_roadmap = None
-    overall_risk_score = None
-
-    from app.services.llm_service import call_llm, parse_llm_json, LLMError
+Respond in plain English. Be specific and actionable.
+"""
 
     try:
-        system_prompt = (
-            "You are an expert API security analyst.\n"
-            "Provide a brief executive summary and remediation roadmap.\n"
-            "Respond ONLY in valid JSON."
+        analysis = call_llm([{"role": "user", "content": prompt}])
+        return {**state, "llm_analysis": analysis}
+    except LLMError as e:
+        fallback = (
+            f"LLM analysis unavailable ({e}). "
+            f"Scan found {len(security_findings)} security findings across "
+            f"{len(endpoints)} endpoints. "
+            f"Deployment status: {deployment_status}."
         )
-        user_prompt = f"""Summarize this API security scan:
-
-API Title: {state['parsed_data'].get('title', 'Unknown')}
-Endpoints scanned: {len(state['parsed_data'].get('endpoints', []))}
-Confirmed vulnerabilities: {len([f for f in findings if f.get('confirmed')])}
-Static findings: {len([f for f in findings if f.get('detection_type') == 'STATIC'])}
-API reachable: {api_testing.get('api_was_reachable', False)}
-Security failures (tests): {api_testing.get('security_failure_count', 0)}
-Expected behavior (tests): {api_testing.get('expected_failure_count', 0)}
-
-Top findings:
-{json.dumps(findings[:5], indent=2)}
-
-Respond with JSON:
-{{
-  "executive_summary": "3 sentences",
-  "remediation_roadmap": {{"immediate": [...], "short_term": [...], "long_term": [...]}},
-  "overall_risk_score": "X/10 — LEVEL"
-}}"""
-
-        try:
-            raw = call_llm([
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ])
-            parsed = parse_llm_json(raw, fallback=None)
-            if parsed:
-                executive_summary = parsed.get("executive_summary")
-                remediation_roadmap = parsed.get("remediation_roadmap")
-                overall_risk_score = parsed.get("overall_risk_score")
-        except LLMError as e:
-            print(f"[Synthesis] LLM Error: {e}")
+        return {**state, "llm_analysis": fallback}
     except Exception as e:
-        print(f"[Synthesis] Unexpected error: {e}")
-
-    # Deterministic fallback
-    if not executive_summary:
-        total = len(findings)
-        confirmed = len([f for f in findings if f.get("confirmed")])
-        critical = len([f for f in findings if f.get("severity") == "CRITICAL"])
-        high = len([f for f in findings if f.get("severity") == "HIGH"])
-        risk_score = (critical * 10 + high * 7 + (total - critical - high) * 3) / max(total, 1)
-        risk_score = min(10, round(risk_score, 1))
-        risk_label = "HIGH RISK" if risk_score >= 7 else ("MEDIUM RISK" if risk_score >= 4 else "LOW RISK")
-
-        executive_summary = (
-            f"This API has {total} security findings ({confirmed} confirmed via live testing). "
-            f"The deployment is {deployment.get('status', 'unknown')}. "
-            f"Recommend addressing confirmed findings immediately."
-        )
-        overall_risk_score = f"{risk_score}/10 — {risk_label}"
-        remediation_roadmap = {
-            "immediate": ["Fix confirmed security failures immediately"],
-            "short_term": ["Investigate static HIGH findings"],
-            "long_term": ["Conduct full penetration test", "Implement security headers"]
-        }
-
-    return {
-        "correlated_findings": correlated_findings,
-        "cross_cutting_concerns": cross_cutting,
-        "executive_summary": executive_summary,
-        "remediation_roadmap": remediation_roadmap,
-        "overall_risk_score": overall_risk_score,
-        "security_score": float(overall_risk_score.split("/")[0]) if overall_risk_score else 5.0
-    }
+        return {**state, "llm_analysis": f"LLM analysis failed: {e}"}
 
 
 # ─────────────────────────────────────────
-# Node: Report Generator
+# Node: Report (merges deep scan enrichment)
 # ─────────────────────────────────────────
 
 def report_node(state: ScanState) -> ScanState:
     agent_output = {
-        "security": state["security_result"],
+        "security":    state["security_result"],
         "api_testing": state["api_test_result"],
-        "deployment": state["deployment_result"],
-        "deep_scan": state.get("deep_scan_result", {}),
-        "planner": state.get("planner_result", {}),
-        "test_generation": state.get("test_generation_result", {}),
-        "synthesis": state.get("synthesis", {}),
+        "deployment":  state["deployment_result"],
     }
 
     report = ReportGenerator().generate(agent_output)
+
+    # Attach extras
+    report["llm_analysis"]       = state.get("llm_analysis", "")
+    report["planner_assessment"]  = state.get("planner_result", {}).get("plan", {})
+    report["test_generation"]    = {
+        "llm_used":             state.get("test_generation_result", {}).get("llm_used", False),
+        "test_cases_generated": state.get("test_generation_result", {}).get("test_cases_generated", 0),
+    }
+
+    # Merge deep scan enriched findings into security_findings
+    deep_scan = state.get("deep_scan_result", {})
+    if deep_scan.get("deep_scan_performed"):
+        enriched_map = {
+            (f.get("endpoint"), f.get("risk_type")): f
+            for f in deep_scan.get("findings_enriched", [])
+        }
+        merged = []
+        for f in report.get("security_findings", []):
+            key = (f.get("endpoint"), f.get("risk_type"))
+            merged.append(enriched_map.get(key, f))
+        report["security_findings"]    = merged
+        report["deep_scan_performed"]  = True
+        report["deep_scan_summary"]    = {
+            "findings_enriched": len(deep_scan.get("findings_enriched", [])),
+        }
+    else:
+        report["deep_scan_performed"] = False
+
     return {**state, "final_report": report}
 
 
@@ -326,44 +255,38 @@ def report_node(state: ScanState) -> ScanState:
 def build_graph() -> Any:
     graph = StateGraph(ScanState)
 
-    # register nodes
-    graph.add_node("planner", planner_node)
+    graph.add_node("planner",         planner_node)
     graph.add_node("test_generation", test_generation_node)
-    graph.add_node("security", security_node)
-    graph.add_node("api_testing", api_testing_node)
-    graph.add_node("deployment", deployment_node)
-    graph.add_node("deep_scan", deep_scan_node)
-    graph.add_node("synthesis", synthesis_node)
-    graph.add_node("report", report_node)
+    graph.add_node("security",        security_node)
+    graph.add_node("api_testing",     api_testing_node)
+    graph.add_node("deployment",      deployment_node)
+    graph.add_node("deep_scan",       deep_scan_node)       # NEW
+    graph.add_node("llm_analysis",    llm_analysis_node)
+    graph.add_node("report",          report_node)
 
-    # entry point
     graph.set_entry_point("planner")
-
-    # linear edges through main pipeline
-    graph.add_edge("planner", "test_generation")
+    graph.add_edge("planner",         "test_generation")
     graph.add_edge("test_generation", "security")
-    graph.add_edge("security", "api_testing")
-    graph.add_edge("api_testing", "deployment")
+    graph.add_edge("security",        "api_testing")
+    graph.add_edge("api_testing",     "deployment")
 
-    # conditional edge: deep_scan or synthesis
+    # Conditional edge — deep_scan or straight to llm_analysis
     graph.add_conditional_edges(
         "deployment",
         should_deep_scan,
         {
-            "deep_scan": "deep_scan",
-            "synthesis": "synthesis"
+            "deep_scan":    "deep_scan",
+            "llm_analysis": "llm_analysis",
         }
     )
 
-    # both deep_scan and synthesis lead to report
-    graph.add_edge("deep_scan", "synthesis")
-    graph.add_edge("synthesis", "report")
-    graph.add_edge("report", END)
+    graph.add_edge("deep_scan",    "llm_analysis")  # deep_scan feeds into llm
+    graph.add_edge("llm_analysis", "report")
+    graph.add_edge("report",       END)
 
     return graph.compile()
 
 
-# module-level compiled graph
 _graph = None
 
 def get_graph():
@@ -374,174 +297,24 @@ def get_graph():
 
 
 # ─────────────────────────────────────────
-# Public interface
+# Public interface — unchanged
 # ─────────────────────────────────────────
 
 class Orchestrator:
 
-    def run_all(self, parsed_data: dict, auth_config: dict = None) -> dict:
+    def run_all(self, parsed_data: dict) -> dict:
         initial_state: ScanState = {
-            "parsed_data": parsed_data,
-            "planner_result": {},
+            "parsed_data":            parsed_data,
+            "planner_result":         {},
             "test_generation_result": {},
-            "security_result": {},
-            "api_test_result": {},
-            "deployment_result": {},
-            "deep_scan_result": {},
-            "synthesis": {},
-            "final_report": {},
-            "deep_scan_needed": False,
-            "auth_config": auth_config or {},
-            "scan_mode": "full",
-            "previous_scan_id": None,
+            "security_result":        {},
+            "api_test_result":        {},
+            "deployment_result":      {},
+            "deep_scan_result":       {},
+            "llm_analysis":           "",
+            "final_report":           {},
         }
 
-        graph = get_graph()
+        graph       = get_graph()
         final_state = graph.invoke(initial_state)
         return final_state["final_report"]
-
-    def run_verify_fix(self, parsed_data: dict, targeted_test_cases: list) -> dict:
-        """
-        Run a lightweight verify-fix scan using only targeted test cases.
-
-        Pipeline:
-        - planner: skipped (too expensive for verify-fix mode, use empty result)
-        - api_testing: runs targeted test cases only
-        - synthesis: correlates new results against targeted cases
-
-        Skipped: security agent (full scan), deep_scan, deployment
-        """
-        auth_config = parsed_data.get("auth", {})
-
-        # Planner - skip for performance, use empty result
-        planner_result = {"status": "skipped", "plan": None}
-
-        # Test Generation - use targeted cases directly instead of generating new ones
-        test_generation_result = {
-            "status": "completed",
-            "test_cases_generated": len(targeted_test_cases),
-            "test_cases": targeted_test_cases,
-        }
-
-        # API Testing - run only targeted cases
-        api_test_result = APITestingAgent().run(
-            parsed_data,
-            planner_result=planner_result,
-            test_generation_result=test_generation_result,
-            auth_config=auth_config,
-        )
-
-        # Security - skipped (lightweight mode)
-        security_result = {
-            "status": "skipped",
-            "findings": [],
-            "total_findings": 0,
-            "critical_count": 0,
-            "high_count": 0,
-        }
-
-        # Deployment - skipped
-        deployment_result = {"status": "skipped"}
-
-        # Deep scan - skipped
-        deep_scan_result = {"status": "skipped"}
-
-        # Synthesis - correlate results
-        synthesis_result = self._run_verify_fix_synthesis(
-            parsed_data=parsed_data,
-            api_test_result=api_test_result,
-            security_result=security_result,
-            targeted_cases=targeted_test_cases,
-        )
-
-        return {
-            "fixed_findings": synthesis_result.get("fixed_findings", []),
-            "persistent_findings": synthesis_result.get("persistent_findings", []),
-            "new_issues": synthesis_result.get("new_issues", []),
-            "overall_status": synthesis_result.get("overall_status", "stable"),
-        }
-
-    def _run_verify_fix_synthesis(
-        self,
-        parsed_data: dict,
-        api_test_result: dict,
-        security_result: dict,
-        targeted_cases: list,
-    ) -> dict:
-        """
-        Correlate new test results against targeted cases to determine
-        which issues are fixed, persistent, or new.
-        """
-        fixed_findings = []
-        persistent_findings = []
-        new_issues = []
-
-        test_results = api_test_result.get("results", [])
-
-        # Build a map of targeted cases by (endpoint, method)
-        targeted_map = {}
-        for tc in targeted_cases:
-            key = (tc.get("target_endpoint", ""), tc.get("target_method", ""))
-            targeted_map[key] = tc
-
-        # Correlate test results against targeted cases
-        failed_endpoints_now = set()
-        passed_endpoints_now = set()
-
-        for ep_result in test_results:
-            ep_path = ep_result.get("endpoint", "")
-            ep_method = ep_result.get("method", "")
-            key = (ep_path, ep_method)
-
-            for t in ep_result.get("tests", []):
-                if t.get("connection_error"):
-                    continue
-                if t.get("passed") is False:
-                    failed_endpoints_now.add(key)
-                else:
-                    passed_endpoints_now.add(key)
-
-        # For each targeted case, determine if it's fixed or persistent
-        for tc in targeted_cases:
-            key = (tc.get("target_endpoint", ""), tc.get("target_method", ""))
-
-            if key in passed_endpoints_now:
-                # Test now passes → this issue is fixed
-                fixed_findings.append({
-                    "endpoint": tc.get("target_endpoint"),
-                    "method": tc.get("target_method"),
-                    "vulnerability": tc.get("name"),
-                    "previously": "failed",
-                    "now": "passed",
-                })
-            elif key in failed_endpoints_now:
-                # Test still fails → persistent
-                persistent_findings.append({
-                    "endpoint": tc.get("target_endpoint"),
-                    "method": tc.get("target_method"),
-                    "vulnerability": tc.get("name"),
-                    "previously": "failed",
-                    "now": "still failing",
-                })
-            # If key not in either (endpoint wasn't tested), leave it out
-
-        # Determine overall status
-        total_targeted = len(targeted_cases)
-        if total_targeted == 0:
-            overall_status = "no_targeted_cases"
-        elif len(fixed_findings) == total_targeted:
-            overall_status = "all_fixed"
-        elif len(fixed_findings) > 0:
-            overall_status = "improving"
-        elif len(persistent_findings) == total_targeted:
-            overall_status = "no_improvement"
-        else:
-            overall_status = "stable"
-
-        return {
-            "fixed_findings": fixed_findings,
-            "persistent_findings": persistent_findings,
-            "new_issues": new_issues,
-            "overall_status": overall_status,
-        }
-

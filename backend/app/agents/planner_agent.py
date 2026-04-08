@@ -1,42 +1,39 @@
+# backend/app/agents/planner_agent.py
+#
+# Analyzes the parsed OpenAPI spec and produces a structured security
+# testing plan. Used by the orchestrator BEFORE the security and
+# api_testing agents so they have context about risk priorities.
+#
+# Always returns structured data — LLM is used when available,
+# rule-based fallback runs automatically if LLM fails.
+
 import json
-import re
+import logging
+
 from app.services.llm_service import call_llm, parse_llm_json, LLMError
+
+logger = logging.getLogger(__name__)
 
 
 class PlannerAgent:
 
-    def __init__(self):
-        pass
-
-    # ── Rule-based fallback (Problem 4) ───────────────────────────
+    # ── Rule-based fallback ───────────────────────────────────────
+    # Runs when LLM is unavailable. Derives the same output fields
+    # from parsed_data alone so the planner tab is never empty.
 
     @staticmethod
     def _build_fallback_plan(parsed_data: dict) -> dict:
-        """
-        Derive a structured planner output from parsed_data alone.
-        Guarantees the planner tab always has content.
-        """
-        endpoints = parsed_data.get("endpoints", [])
-        auth = parsed_data.get("auth", {})
-        title = parsed_data.get("title", "Unknown API")
+        endpoints  = parsed_data.get("endpoints", [])
+        title      = parsed_data.get("title", "Unknown API")
+        auth       = parsed_data.get("auth", {})
+        auth_type  = auth.get("type", "none")
 
-        # Auth pattern detection
-        auth_type = auth.get("type", "none")
-        auth_pattern = {
-            "apiKey": "api_key",
-            "http": auth.get("scheme", "bearer") if auth_type == "http" else "unknown",
-            "oauth2": "oauth",
-            "openIdConnect": "oauth",
-        }.get(auth_type, "none" if auth_type == "none" else "unknown")
-
-        # Identify high-risk endpoints
+        # Identify high-risk endpoints by simple rules
         high_risk = []
         for ep in endpoints:
-            path = ep["path"]
+            path   = ep["path"]
             method = ep["method"]
-            risks = []
-            tests = []
-            vectors = []
+            risks, tests, vectors = [], [], []
 
             if "{" in path:
                 risks.append("Path parameter may allow BOLA")
@@ -44,9 +41,7 @@ class PlannerAgent:
                 vectors.append("Object ID enumeration")
 
             if method in ("POST", "PUT", "PATCH", "DELETE"):
-                ep_sec = ep.get("security", [])
-                global_sec = auth_type != "none"
-                if not ep_sec and not global_sec:
+                if auth_type == "none":
                     risks.append("Mutating method without authentication")
                     tests.append("Auth bypass validation")
                     vectors.append("Unauthenticated write")
@@ -60,48 +55,50 @@ class PlannerAgent:
             if risks:
                 level = "HIGH" if len(risks) >= 2 else "MEDIUM"
                 high_risk.append({
-                    "path": path,
-                    "method": method,
-                    "risk_level": level,
-                    "risk_reasons": risks,
-                    "recommended_tests": tests,
-                    "attack_vectors": vectors,
+                    "path":               path,
+                    "method":             method,
+                    "risk_level":         level,
+                    "risk_reasons":       risks,
+                    "recommended_tests":  tests,
+                    "attack_vectors":     vectors,
                 })
 
         # Testing priorities — first 5 endpoints
         priorities = []
         for ep in endpoints[:5]:
-            reason = "Included for baseline coverage"
+            reason = "Baseline coverage"
             if "{" in ep["path"]:
                 reason = "Parameterized path — BOLA candidate"
             elif ep["method"] in ("POST", "PUT", "DELETE"):
-                reason = "Mutating method — auth validation"
+                reason = "Mutating method — auth validation needed"
             priorities.append({
-                "path": ep["path"],
+                "path":   ep["path"],
                 "method": ep["method"],
                 "reason": reason,
             })
 
-        # Risk summary
-        param_count = len([e for e in endpoints if "{" in e["path"]])
+        # Risk summary sentence
+        param_count    = len([e for e in endpoints if "{" in e["path"]])
         mutating_count = len([e for e in endpoints
-                              if e["method"] in ("POST", "PUT", "PATCH", "DELETE")])
+                               if e["method"] in ("POST", "PUT", "PATCH", "DELETE")])
+        auth_note = (
+            "No authentication detected — high risk."
+            if auth_type == "none"
+            else f"Auth pattern detected: {auth_type}."
+        )
         risk_summary = (
             f"{title} exposes {len(endpoints)} endpoints, "
-            f"{param_count} of which use path parameters and "
-            f"{mutating_count} perform mutating operations. "
-            f"Auth pattern: {auth_pattern}. "
-            f"{'No authentication detected — high risk.' if auth_pattern == 'none' else 'Review auth coverage per endpoint.'}"
+            f"{param_count} with path parameters and "
+            f"{mutating_count} mutating operations. {auth_note}"
         )
 
-        # Suggested fuzz categories
+        # Fuzz categories per parameterized endpoint
         fuzz = {}
         for ep in endpoints:
-            path = ep["path"]
-            if "{" not in path:
+            if "{" not in ep["path"]:
                 continue
             cats = []
-            pl = path.lower()
+            pl   = ep["path"].lower()
             if any(kw in pl for kw in ["user", "id", "account", "order"]):
                 cats.extend(["sql_injection", "auth_bypass"])
             if any(kw in pl for kw in ["search", "query", "filter"]):
@@ -110,16 +107,18 @@ class PlannerAgent:
                 cats.append("path_traversal")
             if not cats:
                 cats = ["sql_injection", "xss"]
-            fuzz[path] = cats
+            fuzz[ep["path"]] = cats
 
         return {
-            "risk_summary": risk_summary,
-            "auth_pattern_detected": auth_pattern,
-            "high_risk_endpoints": high_risk,
-            "testing_priorities": priorities,
-            "business_logic_risks": [
-                f"API with {param_count} parameterized endpoints may be susceptible to IDOR attacks."
-            ] if param_count > 0 else ["No obvious business logic risks detected from spec alone."],
+            "risk_summary":            risk_summary,
+            "auth_pattern_detected":   auth_type,
+            "high_risk_endpoints":     high_risk,
+            "testing_priorities":      priorities,
+            "business_logic_risks": (
+                [f"API has {param_count} parameterized endpoints — IDOR risk."]
+                if param_count > 0
+                else ["No obvious business logic risks detected from spec alone."]
+            ),
             "suggested_fuzz_categories": fuzz,
         }
 
@@ -127,14 +126,17 @@ class PlannerAgent:
 
     def run(self, parsed_data: dict) -> dict:
         endpoints = parsed_data.get("endpoints", [])
-        title = parsed_data.get("title", "Unknown API")
-        version = parsed_data.get("version", "Unknown")
-        base_url = parsed_data.get("base_url", "")
+        high_risk = [e for e in endpoints if "{" in e["path"] or e["method"] in ("POST", "PUT", "DELETE")]
+        others    = [e for e in endpoints if e not in high_risk]
+        priority_endpoints = (high_risk + others)[:5]
+        title     = parsed_data.get("title", "Unknown API")
+        version   = parsed_data.get("version", "Unknown")
+        base_url  = parsed_data.get("base_url", "")
 
         system_prompt = (
             "You are an expert API security architect.\n"
             "Analyze the OpenAPI specification and create a security testing plan.\n"
-            "Respond ONLY in valid JSON."
+            "Respond ONLY in valid JSON. No explanation, no markdown."
         )
 
         user_prompt = f"""Analyze this OpenAPI specification and produce a structured security testing plan.
@@ -142,8 +144,8 @@ class PlannerAgent:
 API Title: {title}
 Version: {version}
 Base URL: {base_url}
-Endpoints ({len(endpoints)} total):
-{json.dumps(endpoints, indent=2)}
+Endpoints ({len(endpoints)} total, showing {len(priority_endpoints)} highest risk):
+{json.dumps(priority_endpoints, indent=2)}
 
 Respond ONLY with a valid JSON object matching this exact structure:
 {{
@@ -170,30 +172,37 @@ Respond ONLY with a valid JSON object matching this exact structure:
 
 Do not include any text before or after the JSON."""
 
+        # Try LLM first
+        raw = None
         try:
             raw = call_llm([
                 {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
+                {"role": "user",   "content": user_prompt},
             ])
         except LLMError as e:
-            print(f"[PlannerAgent] LLM Error: {e}")
-            raw = None
+            logger.warning(f"[PlannerAgent] LLM unavailable, using fallback: {e}")
 
         if raw is not None:
             result = parse_llm_json(raw, fallback=None)
             if result is not None:
+                logger.info(
+                    f"[Planner] LLM plan generated for {len(endpoints)} endpoints"
+                )
                 return {
-                    "agent": "planner",
-                    "status": "completed",
+                    "agent":    "planner",
+                    "status":   "completed",
                     "llm_used": True,
-                    "plan": result,
+                    "plan":     result,
                 }
 
-        # Fallback: rule-based — ALWAYS returns structured data
+        # Fallback — always returns structured data
         fallback_plan = self._build_fallback_plan(parsed_data)
+        logger.info(
+            f"[Planner] Fallback plan generated for {len(endpoints)} endpoints"
+        )
         return {
-            "agent": "planner",
-            "status": "completed",
+            "agent":    "planner",
+            "status":   "completed",
             "llm_used": False,
-            "plan": fallback_plan,
+            "plan":     fallback_plan,
         }

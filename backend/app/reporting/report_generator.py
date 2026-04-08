@@ -1,284 +1,132 @@
+# backend/app/reporting/report_generator.py
+#
+# Step 5 upgrades:
+#  - Handles new security finding fields (detection_type, confidence,
+#    confirmed, vulnerability)
+#  - Handles new deployment fields (security_score, deployment_findings,
+#    docs_exposed, cors_misconfigured)
+#  - Severity counts now include CRITICAL and LOW
+#  - Recommendations deduplicated with ordered list (no set() shuffling)
+#  - Backward compatible — old finding format (risk_type) still works
+
 from collections import Counter
 
 
 class ReportGenerator:
 
     def generate(self, agent_output: dict) -> dict:
-        security = agent_output.get("security", {})
-        api = agent_output.get("api_testing", {})
+        security   = agent_output.get("security", {})
+        api        = agent_output.get("api_testing", {})
         deployment = agent_output.get("deployment", {})
-        deep_scan = agent_output.get("deep_scan", {})
-        planner = agent_output.get("planner", {})
-        synthesis = agent_output.get("synthesis", {})
-        test_gen = agent_output.get("test_generation", {})
 
         findings = security.get("findings", [])
 
-        # Deep scan enriched findings override originals
-        if deep_scan.get("deep_scan_performed"):
-            enriched_map = {
-                (f.get("endpoint"), f.get("method"), f.get("vulnerability")): f
-                for f in deep_scan.get("findings_enriched", [])
-            }
-            final_findings = []
-            for f in findings:
-                key = (f.get("endpoint"), f.get("method"), f.get("vulnerability"))
-                if key in enriched_map:
-                    final_findings.append(enriched_map[key])
-                else:
-                    final_findings.append(f)
-        else:
-            final_findings = findings
+        # ── Severity counts ───────────────────────────────────────
+        critical_count = len([f for f in findings if f.get("severity") == "CRITICAL"])
+        high_count     = len([f for f in findings if f.get("severity") == "HIGH"])
+        medium_count   = len([f for f in findings if f.get("severity") == "MEDIUM"])
+        low_count      = len([f for f in findings if f.get("severity") == "LOW"])
 
-        # Correlated findings from synthesis (may have DYNAMIC promotions)
-        correlated = synthesis.get("correlated_findings", final_findings)
+        # Back-compat: old findings used severity HIGH always
+        # so high_risks = critical + high
+        high_risks = critical_count + high_count
 
-        # Severity counts
-        critical_count = len([f for f in correlated if f.get("severity") == "CRITICAL"])
-        high_count = len([f for f in correlated if f.get("severity") == "HIGH"])
-        medium_count = len([f for f in correlated if f.get("severity") == "MEDIUM"])
-        low_count = len([f for f in correlated if f.get("severity") == "LOW"])
+        # ── Test counts ───────────────────────────────────────────
+        all_tests    = [
+            t for r in api.get("results", [])
+            for t in r.get("tests", [])
+        ]
+        failed_tests = len([t for t in all_tests if t.get("passed") is False])
+        passed_tests = len([t for t in all_tests if t.get("passed") is True])
 
-        # ── New 4-outcome counters from api_testing ──────────────
-        security_failure_count = api.get("security_failure_count", 0)
-        expected_failure_count = api.get("expected_failure_count", 0)
-        pass_count = api.get("pass_count", 0)
-        connection_error_count = api.get("connection_error_count", 0)
+        # ── Deployment summary ────────────────────────────────────
+        deployment_status       = deployment.get("status", "unknown")
+        deployment_security_score = deployment.get("security_score", "N/A")
+        deployment_checks_ran   = deployment_status not in ("unreachable", "unknown")
 
-        # Back-compat flat test list
-        all_tests = [t for ep in api.get("results", [])
-                     for t in ep.get("tests", [])]
-
-        # ── Pattern-based executive summary ──────────────────────
-        executive_summary = self._build_executive_summary(
-            correlated, api, synthesis)
-
-        # ── Specific remediation roadmap ─────────────────────────
-        remediation_roadmap = self._build_roadmap(correlated)
-
-        # ── Recommendations (dedup) ──────────────────────────────
-        recs_ordered = self._build_recommendations(correlated, deployment)
-
-        # Overall risk score
-        overall_risk_score = synthesis.get("overall_risk_score", "")
-        if not overall_risk_score:
-            risk_num = synthesis.get("security_score", 5.0)
-            risk_label = ("HIGH RISK" if risk_num >= 7
-                          else ("MEDIUM RISK" if risk_num >= 4 else "LOW RISK"))
-            overall_risk_score = f"{risk_num}/10 — {risk_label}"
+        # ── Recommendations (ordered, deduplicated) ───────────────
+        recommendations = self._build_recommendations(findings, deployment)
 
         report = {
             "summary": {
-                "critical_risks": critical_count,
-                "high_risks": high_count,
-                "medium_risks": medium_count,
-                "low_risks": low_count,
-                "total_security_findings": len(correlated),
-                "total_tests_run": len(all_tests),
-                # New 4-outcome counters
-                "security_failure_count": security_failure_count,
-                "expected_failure_count": expected_failure_count,
-                "pass_count": pass_count,
-                "connection_error_count": connection_error_count,
-                # Kept for back-compat
-                "failed_tests": security_failure_count,
-                "passed_tests": pass_count,
-                "connection_errors": connection_error_count,
-                "deployment_status": deployment.get("status", "unknown"),
-                "deployment_security_score": deployment.get(
-                    "security_score", "0/6"),
-                "deployment_checks_ran": deployment.get("status") not in ["unreachable", "unknown"],
-                "overall_risk_score": overall_risk_score,
-                "api_was_reachable": api.get("api_was_reachable", False),
-                "deep_scan_performed": deep_scan.get(
-                    "deep_scan_performed", False),
-                "auth_used": api.get("auth_used", False),
+                # Severity breakdown
+                "critical_risks":          critical_count,
+                "high_risks":              high_risks,
+                "medium_risks":            medium_count,
+                "low_risks":               low_count,
+                "total_security_findings": len(findings),
+                # Test counts
+                "total_tests_run":         len(all_tests),
+                "failed_tests":            failed_tests,
+                "passed_tests":            passed_tests,
+                # Deployment
+                "deployment_status":          deployment_status,
+                "deployment_security_score":  deployment_security_score,
+                "deployment_checks_ran":      deployment_checks_ran,
             },
-            "planner_assessment": planner.get("plan", {}),
-            "security_findings": correlated,
-            "api_test_results": api.get("results", []),
-            "deployment": deployment,
-            "synthesis": synthesis,
-            "test_generation": {
-                "llm_used": test_gen.get("llm_used", False),
-                "test_cases_generated": test_gen.get(
-                    "test_cases_generated", 0),
-                "test_cases": test_gen.get("test_cases", []),
-            },
-            "executive_summary": executive_summary,
-            "remediation_roadmap": remediation_roadmap,
-            "security_score": synthesis.get("security_score", 5.0),
-            "recommendations": recs_ordered,
+            "security_findings": findings,
+            "api_test_results":  api.get("results", []),
+            "deployment":        deployment,
+            "recommendations":   recommendations,
         }
 
         return report
 
-    # ── Pattern-based executive summary (Problem 7) ───────────────
+    # ── Recommendations ───────────────────────────────────────────
 
     @staticmethod
-    def _build_executive_summary(correlated, api, synthesis) -> str:
-        """
-        Build executive_summary from actual finding patterns.
-        Must produce DIFFERENT text for DIFFERENT APIs.
-        """
-        confirmed = [f for f in correlated if f.get("confirmed")]
-        static_only = [f for f in correlated
-                       if f.get("detection_type") == "STATIC"]
-        api_reachable = api.get("api_was_reachable", False)
-
-        parts = []
-
-        # 1. Lead with confirmed count
-        if confirmed:
-            parts.append(
-                f"{len(confirmed)} vulnerabilit{'y was' if len(confirmed) == 1 else 'ies were'} "
-                f"confirmed via live testing."
-            )
-        elif not api_reachable:
-            parts.append(
-                "No vulnerabilities were confirmed via live testing "
-                "(API was unreachable)."
-            )
-        else:
-            parts.append(
-                "No vulnerabilities were confirmed via live testing "
-                "(all findings are static analysis only)."
-            )
-
-        # 2. Check for systemic patterns (5+ in one OWASP category)
-        owasp_counter = Counter()
-        for f in correlated:
-            ocat = f.get("owasp_category", "")
-            if ocat:
-                owasp_counter[ocat] += 1
-        systemic = [(cat, cnt) for cat, cnt in owasp_counter.items()
-                    if cnt >= 5]
-        if systemic:
-            for cat, cnt in systemic:
-                parts.append(
-                    f"{cnt} findings fall under {cat} — this suggests "
-                    f"an architectural gap, not isolated misconfigurations."
-                )
-
-        # 3. Close with static count if relevant
-        if static_only and not confirmed:
-            parts.append(
-                f"{len(static_only)} static analysis finding(s) require "
-                f"manual investigation with the API running."
-            )
-        elif static_only:
-            parts.append(
-                f"{len(static_only)} additional static finding(s) "
-                f"should be reviewed."
-            )
-
-        # Fallback to synthesis LLM summary if our pattern text is too short
-        if len(parts) < 2:
-            synth_summary = synthesis.get("executive_summary", "")
-            if synth_summary and synth_summary not in " ".join(parts):
-                parts.append(synth_summary)
-
-        return " ".join(parts)
-
-    # ── Specific remediation roadmap (Problem 8) ──────────────────
-
-    @staticmethod
-    def _build_roadmap(correlated) -> dict:
-        """
-        Build roadmap items from actual finding data.
-        Every item must reference a specific endpoint path or count.
-        """
-        immediate = []
-        short_term = []
-        long_term = []
-
-        # Immediate: confirmed=True or CRITICAL severity
-        for f in correlated:
-            if f.get("confirmed") or f.get("severity") == "CRITICAL":
-                ep = f.get("endpoint", "unknown")
-                method = f.get("method", "")
-                vuln = f.get("vulnerability", "unknown")
-                immediate.append(f"Fix {vuln} on {method} {ep}")
-
-        # Short term: MEDIUM severity unconfirmed — group by vuln type
-        medium_unconfirmed = [f for f in correlated
-                              if f.get("severity") == "MEDIUM"
-                              and not f.get("confirmed")]
-        vuln_groups = {}
-        for f in medium_unconfirmed:
-            vuln = f.get("vulnerability", "unknown")
-            ep = f.get("endpoint", "unknown")
-            if ep not in vuln_groups.setdefault(vuln, []):
-                vuln_groups[vuln].append(ep)
-
-        sorted_groups = sorted(vuln_groups.items(), key=lambda x: len(x[1]), reverse=True)
-        for vuln, eps in sorted_groups[:3]:
-            if len(eps) <= 3:
-                short_term.append(
-                    f"Investigate {vuln} across {', '.join(eps)}")
-            else:
-                short_term.append(
-                    f"Investigate {vuln} across {', '.join(eps[:3])} "
-                    f"and {len(eps) - 3} more")
-
-        # Long term: 3+ same vuln type at MEDIUM/LOW
-        medium_low = [f for f in correlated
-                      if f.get("severity") in ("MEDIUM", "LOW")]
-        vuln_counts = Counter()
-        for f in medium_low:
-            vuln_counts[f.get("vulnerability", "unknown")] += 1
-        for vuln, count in vuln_counts.items():
-            if count >= 3:
-                long_term.append(
-                    f"Implement mitigation for {vuln} across {count} endpoints")
-
-        # Ensure non-empty
-        if not immediate:
-            immediate.append("No confirmed or critical vulnerabilities requiring immediate action.")
-        if not short_term:
-            short_term.append("No short-term actions identified — all findings are low severity.")
-        if not long_term:
-            long_term.append("Conduct periodic full penetration testing.")
-
-        return {
-            "immediate": immediate,
-            "short_term": short_term,
-            "long_term": long_term,
-        }
-
-    # ── Recommendations (existing logic, cleaned up) ──────────────
-
-    @staticmethod
-    def _build_recommendations(correlated, deployment) -> list:
+    def _build_recommendations(findings: list, deployment: dict) -> list:
         recs_ordered = []
-        recs_seen = set()
+        recs_seen    = set()
 
+        # Map vulnerability keywords → recommendation text
         rec_map = {
-            "bola": "Implement object-level authorization checks.",
-            "object": "Implement object-level authorization checks.",
-            "auth": "Add proper authentication mechanisms (JWT, OAuth, API keys).",
-            "excessive data": "Limit sensitive fields in API responses.",
-            "rate limit": "Implement rate limiting on sensitive endpoints.",
-            "sql injection": "Use parameterized queries.",
-            "xss": "Sanitize and escape user inputs.",
-            "ssrf": "Validate URL parameters against an allowlist.",
-            "ssti": "Use template engines with auto-escaping.",
-            "path traversal": "Validate and sanitize file path inputs.",
+            "bola":            "Implement object-level authorization checks to ensure users can only access their own resources.",
+            "object":          "Implement object-level authorization checks to ensure users can only access their own resources.",
+            "auth":            "Add proper authentication and authorization mechanisms (JWT, OAuth, API keys).",
+            "excessive data":  "Limit sensitive fields returned in API responses and implement response filtering.",
+            "rate limit":      "Implement rate limiting on sensitive endpoints to prevent brute-force and abuse attacks.",
+            "sql injection":   "Use parameterized queries or an ORM — never interpolate user input into SQL strings.",
+            "xss":             "Sanitize and escape all user-supplied input before rendering or returning it.",
+            "ssrf":            "Validate and allowlist URL parameters — do not fetch arbitrary user-supplied URLs.",
+            "path traversal":  "Validate and sanitize file path inputs — reject any path containing '..' sequences.",
+            "data exposure":   "Limit sensitive fields returned in API responses and implement response filtering.",
         }
 
-        for f in correlated:
-            vuln = (f.get("vulnerability") or "").lower()
+        # Walk findings in order (most severe first by position)
+        for f in findings:
+            # Support both old (risk_type) and new (vulnerability) field names
+            vuln = (
+                f.get("vulnerability") or f.get("risk_type") or ""
+            ).lower()
+
             for key, rec in rec_map.items():
                 if key in vuln and rec not in recs_seen:
                     recs_seen.add(rec)
                     recs_ordered.append(rec)
 
+        # Deployment-specific recommendations
         if deployment.get("docs_exposed"):
-            rec = "Restrict access to /docs and /swagger-ui in production."
+            rec = "Restrict access to /docs and /swagger-ui in production environments."
+            if rec not in recs_seen:
+                recs_ordered.append(rec)
+
+        if deployment.get("cors_misconfigured"):
+            rec = "Restrict CORS allowed origins — do not use wildcard (*) in production."
+            if rec not in recs_seen:
+                recs_ordered.append(rec)
+
+        missing_headers = deployment.get("security_headers", {}).get("missing", [])
+        if missing_headers:
+            rec = (
+                f"Add missing security headers: "
+                f"{', '.join(missing_headers[:3])}"
+                f"{'...' if len(missing_headers) > 3 else ''}."
+            )
             if rec not in recs_seen:
                 recs_ordered.append(rec)
 
         if not recs_ordered:
-            recs_ordered.append("No critical risks detected.")
+            recs_ordered.append("No critical risks detected — maintain regular security reviews.")
 
         return recs_ordered

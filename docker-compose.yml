@@ -4,11 +4,8 @@ version: "3.9"
 #  API Sentinel — docker-compose
 #
 #  Quick start (dev):
+#    cp .env.example .env   # fill in GROQ_API_KEY
 #    docker-compose up
-#
-#  Production (set your real values in .env first):
-#    cp .env.example .env   # edit values
-#    docker-compose up -d
 #
 #  Access:
 #    Frontend  →  http://localhost:3000
@@ -29,24 +26,31 @@ services:
     environment:
       # Auth — leave blank to disable (dev mode)
       - SENTINEL_API_KEY=${SENTINEL_API_KEY:-}
-      # JWT Auth
-      - JWT_SECRET=${JWT_SECRET:-dev-secret-change-in-prod}
-      - JWT_EXPIRY_DAYS=${JWT_EXPIRY_DAYS:-7}
-      # ── LLM Configuration ──────────────────────────────────────────
+
+      # ── LLM Configuration ──────────────────────────────
+      # "groq" = cloud (fast, free tier available)
+      # "ollama" = local (no API key needed, slower)
       - LLM_PROVIDER=${LLM_PROVIDER:-groq}
+
+      # Groq — get a free key at https://console.groq.com
       - GROQ_API_KEY=${GROQ_API_KEY:-}
-      - GROQ_MODEL=${GROQ_MODEL:-llama3-70b-8192}
+      - GROQ_MODEL=${GROQ_MODEL:-llama-3.3-70b-versatile}
       - GROQ_TEMPERATURE=${GROQ_TEMPERATURE:-0.2}
-      # ── Ollama (Secondary Provider / Fallback) ───────────────────────
+
+      # Ollama — only needed if LLM_PROVIDER=ollama
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
       - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-60}
+
       # CORS
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:-*}
-      # DB path inside the container
+
+      # DB path inside the container (persisted via volume)
       - SENTINEL_DB_PATH=/data/sentinel.db
+
     volumes:
       - sentinel_data:/data
+
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

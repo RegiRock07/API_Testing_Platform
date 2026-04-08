@@ -4,10 +4,7 @@ requests
 pyyaml
 python-multipart
 langgraph
-httpx
-PyJWT
-passlib[bcrypt]
-apscheduler
-reportlab
 groq
 python-dotenv
+google-genai
+firebase-admin

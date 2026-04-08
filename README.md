@@ -387,32 +387,3 @@ perform fuzz testing
 generate actionable security reports
 
 The platform provides a foundation for building a fully automated API security testing tool.
-
-
-
-
-
-Here are 10 reliable public APIs you can use for testing:
-
-https://httpbin.orgReturns request data back to you — perfect for testing
-
-https://jsonplaceholder.typicode.comFake REST API — posts, users, todos, comments
-
-https://api.restful-api.devSimple CRUD API for objects
-
-https://reqres.in/apiFake users API, supports auth simulation
-
-https://dummyjson.comProducts, carts, users, auth — very feature rich
-
-https://fakestoreapi.comE-commerce API — products, carts, users
-
-https://api.publicapis.orgAPI of public APIs — always up
-
-https://catfact.ninjaSimple, always up, good for basic connectivity
-
-https://dog.ceo/apiDog images API — simple and reliable
-
-https://open.er-api.com/v6Exchange rates — always up, no auth needed
-
-
-
