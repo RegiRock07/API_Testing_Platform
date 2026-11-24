@@ -1,0 +1,591 @@
+{
+  "flow": "/api/scan-url",
+  "code_version": "main @ 4a739d6 (last semester)",
+  "target": "http://127.0.0.1:8001",
+  "started_at": "2026-11-24T08:53:37.092616+00:00",
+  "duration_seconds": 9.7,
+  "http_status": 200,
+  "response": {
+    "status": "completed",
+    "spec_id": "7c652f4c-eae8-44b6-8f70-96c87834d0a2",
+    "spec_discovered_at": "http://127.0.0.1:8001/openapi.json",
+    "endpoints_found": 7,
+    "result": {
+      "summary": {
+        "critical_risks": 0,
+        "high_risks": 0,
+        "medium_risks": 4,
+        "low_risks": 4,
+        "total_security_findings": 8,
+        "total_tests_run": 20,
+        "failed_tests": 5,
+        "passed_tests": 15,
+        "deployment_status": "unhealthy",
+        "deployment_security_score": "2/6",
+        "deployment_checks_ran": true
+      },
+      "security_findings": [
+        {
+          "endpoint": "/users",
+          "method": "GET",
+          "risk_type": "Potential Excessive Data Exposure (Static)",
+          "vulnerability": "Potential Excessive Data Exposure (Static)",
+          "severity": "LOW",
+          "confidence": "LOW",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "GET endpoint on a sensitive resource path may return more data than necessary. Consider response filtering and field-level access control."
+        },
+        {
+          "endpoint": "/users",
+          "method": "POST",
+          "risk_type": "Potential Missing Authentication (Static)",
+          "vulnerability": "Potential Missing Authentication (Static)",
+          "severity": "MEDIUM",
+          "confidence": "MEDIUM",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "POST endpoint may require authentication but no authentication scheme was detected in the spec."
+        },
+        {
+          "endpoint": "/users/{user_id}",
+          "method": "GET",
+          "risk_type": "Potential BOLA \u2014 Object ID in Path (Static)",
+          "vulnerability": "Potential BOLA \u2014 Object ID in Path (Static)",
+          "severity": "MEDIUM",
+          "confidence": "MEDIUM",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "Endpoint uses object identifier '{user_id}' which may allow unauthorized access to other users' resources if object-level authorization is not enforced."
+        },
+        {
+          "endpoint": "/users/{user_id}",
+          "method": "GET",
+          "risk_type": "Potential Excessive Data Exposure (Static)",
+          "vulnerability": "Potential Excessive Data Exposure (Static)",
+          "severity": "LOW",
+          "confidence": "LOW",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "GET endpoint on a sensitive resource path may return more data than necessary. Consider response filtering and field-level access control."
+        },
+        {
+          "endpoint": "/users/{user_id}/orders",
+          "method": "GET",
+          "risk_type": "Potential BOLA \u2014 Object ID in Path (Static)",
+          "vulnerability": "Potential BOLA \u2014 Object ID in Path (Static)",
+          "severity": "MEDIUM",
+          "confidence": "MEDIUM",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "Endpoint uses object identifier '{user_id}' which may allow unauthorized access to other users' resources if object-level authorization is not enforced."
+        },
+        {
+          "endpoint": "/users/{user_id}/orders",
+          "method": "GET",
+          "risk_type": "Potential Excessive Data Exposure (Static)",
+          "vulnerability": "Potential Excessive Data Exposure (Static)",
+          "severity": "LOW",
+          "confidence": "LOW",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "GET endpoint on a sensitive resource path may return more data than necessary. Consider response filtering and field-level access control."
+        },
+        {
+          "endpoint": "/search",
+          "method": "POST",
+          "risk_type": "Potential Missing Authentication (Static)",
+          "vulnerability": "Potential Missing Authentication (Static)",
+          "severity": "MEDIUM",
+          "confidence": "MEDIUM",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "POST endpoint may require authentication but no authentication scheme was detected in the spec."
+        },
+        {
+          "endpoint": "/search",
+          "method": "POST",
+          "risk_type": "Potential Lack of Rate Limiting (Static)",
+          "vulnerability": "Potential Lack of Rate Limiting (Static)",
+          "severity": "LOW",
+          "confidence": "LOW",
+          "detection_type": "STATIC",
+          "confirmed": false,
+          "description": "Endpoint path suggests a sensitive operation (login, auth, search) that may be vulnerable to brute-force or abuse without rate limiting."
+        }
+      ],
+      "api_test_results": [
+        {
+          "endpoint": "/",
+          "method": "GET",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 200,
+              "passed": true
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 405,
+              "passed": true
+            }
+          ]
+        },
+        {
+          "endpoint": "/users",
+          "method": "GET",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 200,
+              "passed": true
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 422,
+              "passed": false
+            }
+          ]
+        },
+        {
+          "endpoint": "/users",
+          "method": "POST",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 422,
+              "passed": false
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 200,
+              "passed": false
+            }
+          ]
+        },
+        {
+          "endpoint": "/users/{user_id}",
+          "method": "GET",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 200,
+              "passed": true
+            },
+            {
+              "test": "invalid_parameter",
+              "status_code": 422,
+              "passed": true
+            },
+            {
+              "test": "nonexistent_resource",
+              "status_code": 404,
+              "passed": true
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 405,
+              "passed": true
+            },
+            {
+              "test": "dynamic_fuzz_testing",
+              "total_payloads": 12,
+              "vulnerable_count": 0,
+              "passed": true,
+              "results": [
+                {
+                  "payload": "' OR 1=1 --",
+                  "url": "http://127.0.0.1:8001/users/' OR 1=1 --",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "<script>alert(1)</script>",
+                  "url": "http://127.0.0.1:8001/users/<script>alert(1)</script>",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "../../etc/passwd",
+                  "url": "http://127.0.0.1:8001/users/../../etc/passwd",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "../../../../windows/system32",
+                  "url": "http://127.0.0.1:8001/users/../../../../windows/system32",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "url": "http://127.0.0.1:8001/users/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "%00",
+                  "url": "http://127.0.0.1:8001/users/%00",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "'; DROP TABLE users;",
+                  "url": "http://127.0.0.1:8001/users/'; DROP TABLE users;",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "{{7*7}}",
+                  "url": "http://127.0.0.1:8001/users/{{7*7}}",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "${7*7}",
+                  "url": "http://127.0.0.1:8001/users/${7*7}",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "null",
+                  "url": "http://127.0.0.1:8001/users/null",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "-1",
+                  "url": "http://127.0.0.1:8001/users/-1",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "0",
+                  "url": "http://127.0.0.1:8001/users/0",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "endpoint": "/products",
+          "method": "GET",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 200,
+              "passed": true
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 405,
+              "passed": true
+            }
+          ]
+        },
+        {
+          "endpoint": "/users/{user_id}/orders",
+          "method": "GET",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 200,
+              "passed": true
+            },
+            {
+              "test": "invalid_parameter",
+              "status_code": 422,
+              "passed": true
+            },
+            {
+              "test": "nonexistent_resource",
+              "status_code": 200,
+              "passed": false
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 405,
+              "passed": true
+            },
+            {
+              "test": "dynamic_fuzz_testing",
+              "total_payloads": 12,
+              "vulnerable_count": 0,
+              "passed": true,
+              "results": [
+                {
+                  "payload": "' OR 1=1 --",
+                  "url": "http://127.0.0.1:8001/users/' OR 1=1 --/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "<script>alert(1)</script>",
+                  "url": "http://127.0.0.1:8001/users/<script>alert(1)</script>/orders",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "../../etc/passwd",
+                  "url": "http://127.0.0.1:8001/users/../../etc/passwd/orders",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "../../../../windows/system32",
+                  "url": "http://127.0.0.1:8001/users/../../../../windows/system32/orders",
+                  "status_code": 404,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                  "url": "http://127.0.0.1:8001/users/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "%00",
+                  "url": "http://127.0.0.1:8001/users/%00/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "'; DROP TABLE users;",
+                  "url": "http://127.0.0.1:8001/users/'; DROP TABLE users;/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "{{7*7}}",
+                  "url": "http://127.0.0.1:8001/users/{{7*7}}/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "${7*7}",
+                  "url": "http://127.0.0.1:8001/users/${7*7}/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "null",
+                  "url": "http://127.0.0.1:8001/users/null/orders",
+                  "status_code": 422,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "-1",
+                  "url": "http://127.0.0.1:8001/users/-1/orders",
+                  "status_code": 200,
+                  "possible_vulnerability": false
+                },
+                {
+                  "payload": "0",
+                  "url": "http://127.0.0.1:8001/users/0/orders",
+                  "status_code": 200,
+                  "possible_vulnerability": false
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "endpoint": "/search",
+          "method": "POST",
+          "base_url": "http://127.0.0.1:8001",
+          "tests": [
+            {
+              "test": "valid_request",
+              "status_code": 422,
+              "passed": false
+            },
+            {
+              "test": "wrong_method",
+              "status_code": 405,
+              "passed": true
+            }
+          ]
+        }
+      ],
+      "deployment": {
+        "agent": "deployment",
+        "status": "unhealthy",
+        "status_code": 404,
+        "latency_ms": 22.85,
+        "security_headers": {
+          "present": [],
+          "missing": [
+            "X-Content-Type-Options",
+            "X-Frame-Options",
+            "Strict-Transport-Security",
+            "Content-Security-Policy",
+            "X-XSS-Protection",
+            "Referrer-Policy"
+          ]
+        },
+        "https_enforced": false,
+        "cors_misconfigured": false,
+        "docs_exposed": true,
+        "docs_exposed_at": "http://127.0.0.1:8001/docs",
+        "security_score": "2/6",
+        "deployment_findings": [
+          {
+            "check": "security_header:X-Content-Type-Options",
+            "issue": "Missing X-Content-Type-Options \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "security_header:X-Frame-Options",
+            "issue": "Missing X-Frame-Options \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "security_header:Strict-Transport-Security",
+            "issue": "Missing Strict-Transport-Security \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "security_header:Content-Security-Policy",
+            "issue": "Missing Content-Security-Policy \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "security_header:X-XSS-Protection",
+            "issue": "Missing X-XSS-Protection \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "security_header:Referrer-Policy",
+            "issue": "Missing Referrer-Policy \u2014 increases XSS, clickjacking, and MIME-type sniffing risks"
+          },
+          {
+            "check": "docs_exposure",
+            "issue": "API documentation publicly accessible at http://127.0.0.1:8001/docs \u2014 consider restricting in production"
+          }
+        ]
+      },
+      "recommendations": [
+        "Limit sensitive fields returned in API responses and implement response filtering.",
+        "Add proper authentication and authorization mechanisms (JWT, OAuth, API keys).",
+        "Implement object-level authorization checks to ensure users can only access their own resources.",
+        "Implement rate limiting on sensitive endpoints to prevent brute-force and abuse attacks.",
+        "Restrict access to /docs and /swagger-ui in production environments.",
+        "Add missing security headers: X-Content-Type-Options, X-Frame-Options, Strict-Transport-Security...."
+      ],
+      "llm_analysis": "LLM analysis unavailable ([LLM] All Groq models failed. Check GROQ_API_KEY and model availability at console.groq.com.). Scan found 8 security findings across 7 endpoints. Deployment status: unhealthy.",
+      "planner_assessment": {
+        "risk_summary": "Sample E-commerce API exposes 7 endpoints, 2 with path parameters and 2 mutating operations. No authentication detected \u2014 high risk.",
+        "auth_pattern_detected": "none",
+        "high_risk_endpoints": [
+          {
+            "path": "/users",
+            "method": "POST",
+            "risk_level": "MEDIUM",
+            "risk_reasons": [
+              "Mutating method without authentication"
+            ],
+            "recommended_tests": [
+              "Auth bypass validation"
+            ],
+            "attack_vectors": [
+              "Unauthenticated write"
+            ]
+          },
+          {
+            "path": "/users/{user_id}",
+            "method": "GET",
+            "risk_level": "MEDIUM",
+            "risk_reasons": [
+              "Path parameter may allow BOLA"
+            ],
+            "recommended_tests": [
+              "BOLA validation"
+            ],
+            "attack_vectors": [
+              "Object ID enumeration"
+            ]
+          },
+          {
+            "path": "/users/{user_id}/orders",
+            "method": "GET",
+            "risk_level": "MEDIUM",
+            "risk_reasons": [
+              "Path parameter may allow BOLA"
+            ],
+            "recommended_tests": [
+              "BOLA validation"
+            ],
+            "attack_vectors": [
+              "Object ID enumeration"
+            ]
+          },
+          {
+            "path": "/search",
+            "method": "POST",
+            "risk_level": "MEDIUM",
+            "risk_reasons": [
+              "Mutating method without authentication"
+            ],
+            "recommended_tests": [
+              "Auth bypass validation"
+            ],
+            "attack_vectors": [
+              "Unauthenticated write"
+            ]
+          }
+        ],
+        "testing_priorities": [
+          {
+            "path": "/",
+            "method": "GET",
+            "reason": "Baseline coverage"
+          },
+          {
+            "path": "/users",
+            "method": "GET",
+            "reason": "Baseline coverage"
+          },
+          {
+            "path": "/users",
+            "method": "POST",
+            "reason": "Mutating method \u2014 auth validation needed"
+          },
+          {
+            "path": "/users/{user_id}",
+            "method": "GET",
+            "reason": "Parameterized path \u2014 BOLA candidate"
+          },
+          {
+            "path": "/products",
+            "method": "GET",
+            "reason": "Baseline coverage"
+          }
+        ],
+        "business_logic_risks": [
+          "API has 2 parameterized endpoints \u2014 IDOR risk."
+        ],
+        "suggested_fuzz_categories": {
+          "/users/{user_id}": [
+            "sql_injection",
+            "auth_bypass"
+          ],
+          "/users/{user_id}/orders": [
+            "sql_injection",
+            "auth_bypass"
+          ]
+        }
+      },
+      "test_generation": {
+        "llm_used": false,
+        "test_cases_generated": 6
+      },
+      "deep_scan_performed": true,
+      "deep_scan_summary": {
+        "findings_enriched": 2
+      }
+    }
+  }
+}
