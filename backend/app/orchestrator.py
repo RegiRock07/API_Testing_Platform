@@ -1,16 +1,28 @@
 # backend/app/orchestrator.py
 #
-# Step 3+4 changes:
-#  - deep_scan_node added with conditional edge after deployment
-#  - security_node now passes planner_result to SecurityAgent
-#  - report_node merges deep_scan enriched findings into report
-#  - All other nodes unchanged
+# The LangGraph scan pipeline. Both the blocking endpoints (/api/run,
+# /api/scan-url) and the SSE stream (/api/run/{id}/stream) run THIS graph —
+# there is no second hand-written copy of the pipeline.
+#
+#   planner -> test_generation -> security -> api_testing -> deployment
+#           -> [deep_scan if serious findings] -> llm_analysis -> report
+#
+# Progress reporting: pass a callback as config["configurable"]["progress"].
+# Every node calls it with (agent, status, data) — status is "running",
+# "completed", "skipped" or "error". The callback runs on the graph's
+# worker thread, so it must be thread-safe (streaming.py hands events to
+# the event loop with loop.call_soon_threadsafe).
+#
+# The report node only emits "running": the caller emits "report
+# completed" once the report has been persisted.
 
 from __future__ import annotations
 
 import json
-from typing import TypedDict, Any
+import logging
+from typing import Any, Callable, Optional, TypedDict
 
+from langchain_core.runnables import RunnableConfig
 from langgraph.graph import StateGraph, END
 
 from app.agents.planner_agent         import PlannerAgent
@@ -21,6 +33,15 @@ from app.agents.deployment_agent      import DeploymentAgent
 from app.agents.deep_scan_agent       import DeepScanAgent
 from app.reporting.report_generator   import ReportGenerator
 
+logger = logging.getLogger(__name__)
+
+ProgressFn = Callable[[str, str, Optional[dict]], None]
+
+DEFAULT_OPTIONS: dict[str, Any] = {
+    "safe_mode": True,   # API testing never sends DELETE/PUT/PATCH
+    "auth":      None,   # {"type": "bearer"|"api_key"|"basic", "value", "header_name"}
+}
+
 
 # ─────────────────────────────────────────
 # Shared state
@@ -28,124 +49,219 @@ from app.reporting.report_generator   import ReportGenerator
 
 class ScanState(TypedDict):
     parsed_data:            dict[str, Any]
+    options:                dict[str, Any]
     planner_result:         dict[str, Any]
     test_generation_result: dict[str, Any]
     security_result:        dict[str, Any]
     api_test_result:        dict[str, Any]
     deployment_result:      dict[str, Any]
-    deep_scan_result:       dict[str, Any]   # NEW
+    deep_scan_result:       dict[str, Any]
     llm_analysis:           str
+    llm_analysis_llm_used:  bool
     final_report:           dict[str, Any]
 
 
+def make_initial_state(parsed_data: dict, options: Optional[dict] = None) -> ScanState:
+    return {
+        "parsed_data":            parsed_data,
+        "options":                {**DEFAULT_OPTIONS, **(options or {})},
+        "planner_result":         {},
+        "test_generation_result": {},
+        "security_result":        {},
+        "api_test_result":        {},
+        "deployment_result":      {},
+        "deep_scan_result":       {},
+        "llm_analysis":           "",
+        "llm_analysis_llm_used":  False,
+        "final_report":           {},
+    }
+
+
+def _base_url(state: ScanState) -> str:
+    # parsed_data["base_url"] can be present but None (spec without servers)
+    return state["parsed_data"].get("base_url") or ""
+
+
 # ─────────────────────────────────────────
-# Node: Planner (unchanged)
+# Progress plumbing
 # ─────────────────────────────────────────
 
-def planner_node(state: ScanState) -> ScanState:
+def _emit(config: Optional[RunnableConfig], agent: str, status: str,
+          data: Optional[dict] = None) -> None:
+    progress = ((config or {}).get("configurable") or {}).get("progress")
+    if progress is None:
+        return
     try:
-        result = PlannerAgent().run(state["parsed_data"])
-    except Exception as e:
-        print(f"[planner_node] Error: {e}")
-        result = {"agent": "planner", "status": "error", "plan": {}}
-    return {**state, "planner_result": result}
+        progress(agent, status, data)
+    except Exception as e:          # a broken listener must not break the scan
+        logger.warning(f"[Orchestrator] progress callback failed: {e}")
+
+
+def tracked(agent: str,
+            summarize: Optional[Callable[[dict], Optional[dict]]] = None,
+            fallback: Optional[Callable[[Exception], dict]] = None,
+            emit_completed: bool = True):
+    """
+    Wrap a node: emit running -> completed/error around it.
+    On an exception the node's `fallback(e)` state update is used so the
+    rest of the pipeline still runs; with no fallback the error propagates.
+    """
+    def decorate(fn: Callable[[ScanState], dict]):
+        # Deliberately no functools.wraps: LangGraph inspects the wrapper's
+        # own signature to decide whether to pass `config`.
+        def node(state: ScanState, config: RunnableConfig) -> dict:
+            _emit(config, agent, "running")
+            try:
+                update = fn(state)
+            except Exception as e:
+                logger.exception(f"[{agent}_node] failed")
+                _emit(config, agent, "error", {"message": str(e)})
+                if fallback is None:
+                    raise
+                return fallback(e)
+            if emit_completed:
+                _emit(config, agent, "completed", summarize(update) if summarize else None)
+            return update
+        node.__name__ = f"{agent}_node"
+        return node
+    return decorate
+
+
+def _count_tests(api_result: dict) -> tuple[int, int]:
+    tests = [t for r in api_result.get("results", []) for t in r.get("tests", [])]
+    return (sum(1 for t in tests if t.get("passed") is True),
+            sum(1 for t in tests if t.get("passed") is False))
 
 
 # ─────────────────────────────────────────
-# Node: Test Generation (unchanged)
+# Nodes
 # ─────────────────────────────────────────
 
-def test_generation_node(state: ScanState) -> ScanState:
-    try:
-        result = TestGeneratorAgent().run(
-            state["parsed_data"],
-            planner_result=state.get("planner_result", {}),
-        )
-    except Exception as e:
-        print(f"[test_generation_node] Error: {e}")
-        result = {
-            "agent": "test_generation", "status": "error",
-            "llm_used": False, "test_cases_generated": 0, "test_cases": [],
-        }
-    return {**state, "test_generation_result": result}
+@tracked(
+    "planner",
+    summarize=lambda u: {
+        "high_risk_count": len(u["planner_result"].get("plan", {}).get("high_risk_endpoints", [])),
+        "llm_used":        u["planner_result"].get("llm_used", False),
+    },
+    fallback=lambda e: {"planner_result": {
+        "agent": "planner", "status": "error", "llm_used": False, "plan": {}, "error": str(e)}},
+)
+def planner_node(state: ScanState) -> dict:
+    return {"planner_result": PlannerAgent().run(state["parsed_data"])}
+
+
+@tracked(
+    "test_generation",
+    summarize=lambda u: {
+        "test_cases_generated": u["test_generation_result"].get("test_cases_generated", 0),
+        "llm_used":             u["test_generation_result"].get("llm_used", False),
+    },
+    fallback=lambda e: {"test_generation_result": {
+        "agent": "test_generation", "status": "error",
+        "llm_used": False, "test_cases_generated": 0, "test_cases": [], "error": str(e)}},
+)
+def test_generation_node(state: ScanState) -> dict:
+    return {"test_generation_result": TestGeneratorAgent().run(
+        state["parsed_data"], planner_result=state.get("planner_result", {}))}
+
+
+@tracked(
+    "security",
+    summarize=lambda u: {
+        "total_findings": u["security_result"].get("total_findings", 0),
+        "critical_count": u["security_result"].get("critical_count", 0),
+        "high_count":     u["security_result"].get("high_count", 0),
+        "medium_count":   u["security_result"].get("medium_count", 0),
+    },
+    fallback=lambda e: {"security_result": {
+        "agent": "security", "status": "error", "findings": [], "total_findings": 0,
+        "critical_count": 0, "high_count": 0, "medium_count": 0, "low_count": 0,
+        "error": str(e)}},
+)
+def security_node(state: ScanState) -> dict:
+    return {"security_result": SecurityAgent().run(
+        state["parsed_data"], planner_result=state.get("planner_result", {}))}
+
+
+def _api_summary(u: dict) -> dict:
+    passed, failed = _count_tests(u["api_test_result"])
+    return {"passed": passed, "failed": failed,
+            "status": u["api_test_result"].get("status")}
+
+
+@tracked(
+    "api_testing",
+    summarize=_api_summary,
+    fallback=lambda e: {"api_test_result": {
+        "agent": "api_testing", "status": "error", "results": [], "note": str(e)}},
+)
+def api_testing_node(state: ScanState) -> dict:
+    options = state.get("options") or DEFAULT_OPTIONS
+    return {"api_test_result": APITestingAgent().run(state["parsed_data"], options)}
+
+
+@tracked(
+    "deployment",
+    summarize=lambda u: {
+        "status":         u["deployment_result"].get("status"),
+        "security_score": u["deployment_result"].get("security_score", "N/A"),
+    },
+    fallback=lambda e: {"deployment_result": {
+        "agent": "deployment", "status": "error", "error": str(e)}},
+)
+def deployment_node(state: ScanState) -> dict:
+    # No base URL -> the agent reports "unreachable" itself. Never default
+    # to localhost:8000: that is this scanner, not the target.
+    return {"deployment_result": DeploymentAgent().run(base_url=_base_url(state))}
 
 
 # ─────────────────────────────────────────
-# Node: Security (now passes planner context)
+# Conditional edge: deep scan when there are serious findings
 # ─────────────────────────────────────────
 
-def security_node(state: ScanState) -> ScanState:
-    result = SecurityAgent().run(
-        state["parsed_data"],
-        planner_result=state.get("planner_result", {}),
-    )
-    return {**state, "security_result": result}
-
-
-# ─────────────────────────────────────────
-# Node: API Testing (unchanged)
-# ─────────────────────────────────────────
-
-def api_testing_node(state: ScanState) -> ScanState:
-    result = APITestingAgent().run(state["parsed_data"])
-    return {**state, "api_test_result": result}
-
-
-# ─────────────────────────────────────────
-# Node: Deployment (unchanged)
-# ─────────────────────────────────────────
-
-def deployment_node(state: ScanState) -> ScanState:
-    base_url = state["parsed_data"].get("base_url", "http://localhost:8000")
-    result   = DeploymentAgent().run(base_url=base_url)
-    return {**state, "deployment_result": result}
-
-
-# ─────────────────────────────────────────
-# Conditional edge: should we run deep scan?
-# Triggers when there are 3+ HIGH or any CRITICAL findings.
-# ─────────────────────────────────────────
-
-def should_deep_scan(state: ScanState) -> str:
-    security     = state.get("security_result", {})
+def should_deep_scan(state: ScanState, config: RunnableConfig) -> str:
+    security       = state.get("security_result", {})
     critical_count = security.get("critical_count", 0)
     high_count     = security.get("high_count", 0)
     medium_count   = security.get("medium_count", 0)
 
     if critical_count > 0 or high_count >= 2 or medium_count >= 3:
-        print(
+        logger.info(
             f"[Orchestrator] Deep scan triggered "
             f"(CRITICAL={critical_count}, HIGH={high_count}, MEDIUM={medium_count})"
         )
         return "deep_scan"
 
-    print(
-        f"[Orchestrator] Deep scan skipped "
-    )
+    logger.info("[Orchestrator] Deep scan skipped")
+    _emit(config, "deep_scan", "skipped")
     return "llm_analysis"
 
 
-# ─────────────────────────────────────────
-# NEW Node: Deep Scan
-# ─────────────────────────────────────────
-
-def deep_scan_node(state: ScanState) -> ScanState:
-    try:
-        result = DeepScanAgent().run(state.get("security_result", {}))
-    except Exception as e:
-        print(f"[deep_scan_node] Error: {e}")
-        result = {
-            "agent": "deep_scan", "status": "error",
-            "deep_scan_performed": False, "findings_enriched": [],
-        }
-    return {**state, "deep_scan_result": result}
+@tracked(
+    "deep_scan",
+    summarize=lambda u: {
+        "findings_enriched": len(u["deep_scan_result"].get("findings_enriched", [])),
+        "llm_used":          u["deep_scan_result"].get("llm_used", False),
+    },
+    fallback=lambda e: {"deep_scan_result": {
+        "agent": "deep_scan", "status": "error", "deep_scan_performed": False,
+        "llm_used": False, "findings_enriched": [], "error": str(e)}},
+)
+def deep_scan_node(state: ScanState) -> dict:
+    return {"deep_scan_result": DeepScanAgent().run(
+        state.get("security_result", {}), base_url=_base_url(state))}
 
 
 # ─────────────────────────────────────────
 # Node: LLM Analysis (includes deep scan context)
 # ─────────────────────────────────────────
 
-def llm_analysis_node(state: ScanState) -> ScanState:
+@tracked(
+    "llm_analysis",
+    fallback=lambda e: {"llm_analysis": f"LLM analysis failed: {e}",
+                        "llm_analysis_llm_used": False},
+)
+def llm_analysis_node(state: ScanState) -> dict:
     from app.services.llm_service import call_llm, LLMError
 
     security_findings = state["security_result"].get("findings", [])
@@ -153,7 +269,6 @@ def llm_analysis_node(state: ScanState) -> ScanState:
     deployment_status = state["deployment_result"].get("status", "unknown")
     deep_scan         = state.get("deep_scan_result", {})
 
-    # Build planner context string
     planner_summary = ""
     plan = state.get("planner_result", {}).get("plan", {})
     if plan:
@@ -163,7 +278,6 @@ def llm_analysis_node(state: ScanState) -> ScanState:
             f"\nHigh Risk Endpoints: {len(plan.get('high_risk_endpoints', []))}"
         )
 
-    # Note if deep scan ran
     deep_scan_note = ""
     if deep_scan.get("deep_scan_performed"):
         enriched = deep_scan.get("findings_enriched", [])
@@ -192,7 +306,7 @@ Respond in plain English. Be specific and actionable.
 
     try:
         analysis = call_llm([{"role": "user", "content": prompt}])
-        return {**state, "llm_analysis": analysis}
+        return {"llm_analysis": analysis, "llm_analysis_llm_used": True}
     except LLMError as e:
         fallback = (
             f"LLM analysis unavailable ({e}). "
@@ -200,16 +314,20 @@ Respond in plain English. Be specific and actionable.
             f"{len(endpoints)} endpoints. "
             f"Deployment status: {deployment_status}."
         )
-        return {**state, "llm_analysis": fallback}
-    except Exception as e:
-        return {**state, "llm_analysis": f"LLM analysis failed: {e}"}
+        return {"llm_analysis": fallback, "llm_analysis_llm_used": False}
 
 
 # ─────────────────────────────────────────
 # Node: Report (merges deep scan enrichment)
 # ─────────────────────────────────────────
 
-def report_node(state: ScanState) -> ScanState:
+def finding_key(f: dict):
+    """Security findings carry a unique `id`; fall back for old reports."""
+    return f.get("id") or (f.get("endpoint"), f.get("method"), f.get("risk_type"))
+
+
+@tracked("report", emit_completed=False)   # caller emits "completed" after saving
+def report_node(state: ScanState) -> dict:
     agent_output = {
         "security":    state["security_result"],
         "api_testing": state["api_test_result"],
@@ -218,34 +336,44 @@ def report_node(state: ScanState) -> ScanState:
 
     report = ReportGenerator().generate(agent_output)
 
-    # Attach extras
+    planner_result  = state.get("planner_result", {})
+    test_gen_result = state.get("test_generation_result", {})
+    deep_scan       = state.get("deep_scan_result", {})
+    options         = state.get("options") or DEFAULT_OPTIONS
+    auth            = options.get("auth") or {}
+
     report["llm_analysis"]       = state.get("llm_analysis", "")
-    report["planner_assessment"]  = state.get("planner_result", {}).get("plan", {})
+    report["planner_assessment"] = planner_result.get("plan", {})
     report["test_generation"]    = {
-        "llm_used":             state.get("test_generation_result", {}).get("llm_used", False),
-        "test_cases_generated": state.get("test_generation_result", {}).get("test_cases_generated", 0),
+        "llm_used":             test_gen_result.get("llm_used", False),
+        "test_cases_generated": test_gen_result.get("test_cases_generated", 0),
+    }
+    report["llm_usage"] = {
+        "planner":         planner_result.get("llm_used", False),
+        "test_generation": test_gen_result.get("llm_used", False),
+        "deep_scan":       deep_scan.get("llm_used", False),
+        "llm_analysis":    state.get("llm_analysis_llm_used", False),
+    }
+    # Never persist the credential itself — only that one was used
+    report["scan_options"] = {
+        "safe_mode":     options.get("safe_mode", True),
+        "authenticated": bool(auth.get("value")),
+        "auth_type":     auth.get("type") if auth.get("value") else None,
     }
 
-    # Merge deep scan enriched findings into security_findings
-    deep_scan = state.get("deep_scan_result", {})
     if deep_scan.get("deep_scan_performed"):
-        enriched_map = {
-            (f.get("endpoint"), f.get("risk_type")): f
-            for f in deep_scan.get("findings_enriched", [])
-        }
-        merged = []
-        for f in report.get("security_findings", []):
-            key = (f.get("endpoint"), f.get("risk_type"))
-            merged.append(enriched_map.get(key, f))
-        report["security_findings"]    = merged
-        report["deep_scan_performed"]  = True
-        report["deep_scan_summary"]    = {
+        enriched_map = {finding_key(f): f for f in deep_scan.get("findings_enriched", [])}
+        report["security_findings"] = [
+            enriched_map.get(finding_key(f), f) for f in report.get("security_findings", [])
+        ]
+        report["deep_scan_performed"] = True
+        report["deep_scan_summary"]   = {
             "findings_enriched": len(deep_scan.get("findings_enriched", [])),
         }
     else:
         report["deep_scan_performed"] = False
 
-    return {**state, "final_report": report}
+    return {"final_report": report}
 
 
 # ─────────────────────────────────────────
@@ -260,7 +388,7 @@ def build_graph() -> Any:
     graph.add_node("security",        security_node)
     graph.add_node("api_testing",     api_testing_node)
     graph.add_node("deployment",      deployment_node)
-    graph.add_node("deep_scan",       deep_scan_node)       # NEW
+    graph.add_node("deep_scan",       deep_scan_node)
     graph.add_node("llm_analysis",    llm_analysis_node)
     graph.add_node("report",          report_node)
 
@@ -270,17 +398,13 @@ def build_graph() -> Any:
     graph.add_edge("security",        "api_testing")
     graph.add_edge("api_testing",     "deployment")
 
-    # Conditional edge — deep_scan or straight to llm_analysis
     graph.add_conditional_edges(
         "deployment",
         should_deep_scan,
-        {
-            "deep_scan":    "deep_scan",
-            "llm_analysis": "llm_analysis",
-        }
+        {"deep_scan": "deep_scan", "llm_analysis": "llm_analysis"},
     )
 
-    graph.add_edge("deep_scan",    "llm_analysis")  # deep_scan feeds into llm
+    graph.add_edge("deep_scan",    "llm_analysis")
     graph.add_edge("llm_analysis", "report")
     graph.add_edge("report",       END)
 
@@ -297,24 +421,17 @@ def get_graph():
 
 
 # ─────────────────────────────────────────
-# Public interface — unchanged
+# Public interface
 # ─────────────────────────────────────────
 
 class Orchestrator:
 
-    def run_all(self, parsed_data: dict) -> dict:
-        initial_state: ScanState = {
-            "parsed_data":            parsed_data,
-            "planner_result":         {},
-            "test_generation_result": {},
-            "security_result":        {},
-            "api_test_result":        {},
-            "deployment_result":      {},
-            "deep_scan_result":       {},
-            "llm_analysis":           "",
-            "final_report":           {},
-        }
-
-        graph       = get_graph()
-        final_state = graph.invoke(initial_state)
+    def run_all(self, parsed_data: dict, options: Optional[dict] = None,
+                progress: Optional[ProgressFn] = None) -> dict:
+        """
+        Run the full graph synchronously and return the final report.
+        Blocking — call it from a worker thread when inside an event loop.
+        """
+        config: RunnableConfig = {"configurable": {"progress": progress}} if progress else {}
+        final_state = get_graph().invoke(make_initial_state(parsed_data, options), config=config)
         return final_state["final_report"]

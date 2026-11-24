@@ -117,8 +117,9 @@ def _call_groq(messages: list) -> str:
             logger.warning(f"[LLM] Groq model {model} failed: {e}")
 
     raise LLMError(
-        "[LLM] All Groq models failed. "
-        "Check GROQ_API_KEY and model availability at console.groq.com."
+        f"[LLM] All Groq models failed ({GROQ_MODEL_PRIMARY}, {GROQ_MODEL_FALLBACK}). "
+        "Check GROQ_API_KEY, and set GROQ_MODEL_PRIMARY / GROQ_MODEL_FALLBACK to models "
+        "listed by GET https://api.groq.com/openai/v1/models."
     )
 
 
@@ -168,7 +169,7 @@ def _call_gemini(messages: list) -> str:
     Free tier via AI Studio — 1,500 requests/day.
     """
     from google import genai
-    from google.genai import types
+    from app.config import GEMINI_MODEL
 
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
@@ -196,17 +197,19 @@ def _call_gemini(messages: list) -> str:
 
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
+            model=GEMINI_MODEL,
             contents=prompt,
         )
         content = response.text
         if not content:
-            raise LLMError("Gemini returned empty response")
-        logger.info("[LLM] Gemini gemini-2.0-flash success")
+            raise LLMError(f"Gemini {GEMINI_MODEL} returned empty response")
+        logger.info(f"[LLM] Gemini success with model: {GEMINI_MODEL}")
         return content
 
+    except LLMError:
+        raise
     except Exception as e:
-        raise LLMError(f"Gemini call failed: {e}")
+        raise LLMError(f"Gemini call failed ({GEMINI_MODEL}): {e}")
 
 def call_llm(messages: list) -> str:
     provider = os.getenv("LLM_PROVIDER", "groq").lower().strip()

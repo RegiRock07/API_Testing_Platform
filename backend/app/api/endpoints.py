@@ -6,7 +6,7 @@
 #  - scan_api_url handles the None case by running baseline checks
 #  - Everything else unchanged
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Header, Depends
+from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Header, Depends
 from pydantic import BaseModel
 from typing import Optional
 import json
@@ -14,7 +14,7 @@ import yaml
 import requests
 import os
 
-from app.schemas.api_spec import APISpecUpload, APISpecResponse
+from app.schemas.api_spec import APISpecUpload, APISpecResponse, ScanOptions
 from app.services.spec_parser import SpecParser
 from app.services.baseline import run_baseline_checks
 from app.orchestrator import Orchestrator
@@ -133,12 +133,13 @@ def get_spec(spec_id: str):
 # ─────────────────────────────────────────
 
 @router.post("/api/run/{spec_id}", dependencies=[AuthDep])
-def run_agents(spec_id: str):
+def run_agents(spec_id: str, options: Optional[ScanOptions] = Body(default=None)):
+    """Blocking scan. Body (optional): {"safe_mode": bool, "auth": {...}}."""
     scan = spec_parser.get_spec(spec_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Spec not found")
 
-    result = orchestrator.run_all(scan["parsed_data"])
+    result = orchestrator.run_all(scan["parsed_data"], (options or ScanOptions()).to_state())
     save_report(spec_id, result)
     return {"status": "completed", "result": result}
 
