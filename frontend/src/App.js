@@ -1034,7 +1034,7 @@ function DeploymentView({ deployment }) {
 }
 
 // ─── Scan Header ──────────────────────────────────────────────────
-function ScanHeader({ report }) {
+function ScanHeader({ report, onCompare }) {
   const plan      = report.planner_assessment || {};
   const dep       = report.deployment || {};
   const findings  = report.security_findings || [];
@@ -1083,7 +1083,171 @@ function ScanHeader({ report }) {
           </div>
         </div>
       </div>
-      <Badge label={worst.label} color={worst.color} bg={`${worst.color}12`} border={`${worst.color}30`} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        {onCompare && <Btn onClick={onCompare} variant="ghost" small>⇄ Compare</Btn>}
+        <Badge label={worst.label} color={worst.color} bg={`${worst.color}12`} border={`${worst.color}30`} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Scan comparison ──────────────────────────────────────────────
+const fmtDelta = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : "0");
+// goodWhenUp: is an increase an improvement (passed tests, score) or a regression (findings, failures)?
+const deltaColor = (n, goodWhenUp) => (n === 0 || n == null ? C.textFaint : (n > 0) === goodWhenUp ? C.green : C.red);
+const fmtDate = (iso) => { try { return new Date(iso + (iso?.endsWith("Z") ? "" : "Z")).toLocaleString(); } catch { return iso; } };
+
+// Lists earlier completed scans with the same API title as `scanId`.
+function ComparePicker({ apiFetch, scanId, onPick, onCancel }) {
+  const [state, setState] = useState({ loading: true, error: "", current: null, candidates: [] });
+
+  useEffect(() => {
+    let alive = true;
+    apiFetch("/api/scans")
+      .then(rows => {
+        const current = rows.find(r => r.id === scanId);
+        const candidates = current
+          ? rows.filter(r => r.id !== scanId && r.status === "completed"
+              && r.api_title === current.api_title && r.created_at < current.created_at)
+                .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+          : [];
+        if (alive) setState({ loading: false, error: current ? "" : "This scan isn't in the history list.", current, candidates });
+      })
+      .catch(e => alive && setState(s => ({ ...s, loading: false, error: e.message || "Could not load scans" })));
+    return () => { alive = false; };
+  }, [apiFetch, scanId]);
+
+  const { loading, error, current, candidates } = state;
+  return (
+    <div role="dialog" aria-label="Compare with an earlier scan" style={{ background: C.surface, border: `1px solid ${C.accentBorder}`, borderRadius: 10, padding: "16px 18px", marginBottom: 16, boxShadow: C.shadowMd }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12 }}>
+        <div>
+          <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>Compare with an earlier scan</div>
+          {current && <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 2 }}>Earlier scans of <strong>{current.api_title}</strong></div>}
+        </div>
+        <Btn onClick={onCancel} variant="subtle" small>Cancel</Btn>
+      </div>
+      {loading && <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted }}>Loading scans…</div>}
+      {!loading && error && <div style={{ fontFamily: sans, fontSize: 13, color: C.red }}>{error}</div>}
+      {!loading && !error && candidates.length === 0 && (
+        <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted }}>
+          No earlier completed scans of this API yet. Scan it again later to see what changed.
+        </div>
+      )}
+      {candidates.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 280, overflowY: "auto" }}>
+          {candidates.map(s => (
+            <button key={s.id} type="button" onClick={() => onPick(s)}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.surfaceHigh, cursor: "pointer", textAlign: "left" }}>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", fontFamily: mono, fontSize: 12, color: C.textSub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                <span style={{ fontFamily: sans, fontSize: 11, color: C.textFaint }} title={fmtDate(s.created_at)}>
+                  {timeAgo(s.created_at)} · {s.endpoint_count} endpoints
+                </span>
+              </span>
+              <span style={{ fontFamily: sans, fontSize: 12, fontWeight: 600, color: C.accent, flexShrink: 0 }}>Compare →</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeltaStat({ label, before, after, delta, goodWhenUp }) {
+  return (
+    <div style={{ background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", minWidth: 96 }}>
+      <div style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: deltaColor(delta, goodWhenUp), lineHeight: 1 }}>
+        {delta == null ? "—" : fmtDelta(delta)}
+      </div>
+      <div style={{ fontFamily: sans, fontSize: 11, color: C.textMuted, marginTop: 5 }}>{label}</div>
+      <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint, marginTop: 2 }}>{before} → {after}</div>
+    </div>
+  );
+}
+
+function CompareColumn({ title, items, tone, empty }) {
+  return (
+    <div data-testid={`compare-${title.toLowerCase()}`} style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${tone.color}`, borderRadius: 10, padding: "12px 12px 14px", minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, color: tone.color }}>{title}</span>
+        <Badge label={String(items.length)} color={tone.color} bg={tone.bg} border={tone.border} small />
+      </div>
+      {items.length === 0
+        ? <div style={{ fontFamily: sans, fontSize: 12, color: C.textFaint }}>{empty}</div>
+        : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {items.map(f => (
+              <div key={f.id} style={{ background: tone.bg, border: `1px solid ${tone.border}`, borderRadius: 7, padding: "8px 10px" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                  <Badge label={f.severity} color={sevColor(f.severity)} bg={sevBg(f.severity)} border={sevBorder(f.severity)} small />
+                  {f.severity_before && <span style={{ fontFamily: sans, fontSize: 11, color: C.textMuted }}>was {f.severity_before}</span>}
+                </div>
+                <div style={{ fontFamily: sans, fontSize: 12, fontWeight: 600, color: C.textSub, lineHeight: 1.4 }}>{f.vulnerability || f.risk_type}</div>
+                <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted, marginTop: 2, wordBreak: "break-all" }}>{f.method} {f.endpoint}</div>
+              </div>
+            ))}
+          </div>}
+    </div>
+  );
+}
+
+const OUTCOME_COLOR = { passed: C.green, failed: C.red, skipped: C.textMuted, absent: C.textFaint };
+
+function CompareView({ data, onBack }) {
+  const { findings, severity, tests, deployment } = data;
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>
+            What changed in {data.target.api_title || "this API"}
+          </div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+            <span title={fmtDate(data.base.created_at)}>Earlier scan ({timeAgo(data.base.created_at)})</span>
+            {" → "}
+            <span title={fmtDate(data.target.created_at)}>this scan ({timeAgo(data.target.created_at)})</span>
+            {!data.same_api && <span style={{ color: C.yellow }}> · different API titles</span>}
+          </div>
+        </div>
+        <Btn onClick={onBack} variant="subtle" small>← Back to report</Btn>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map(s => (
+          <DeltaStat key={s} label={s.charAt(0) + s.slice(1).toLowerCase()} goodWhenUp={false}
+            before={severity.base[s]} after={severity.target[s]} delta={severity.delta[s]} />
+        ))}
+        <DeltaStat label="Tests passed" goodWhenUp before={tests.base.passed} after={tests.target.passed} delta={tests.delta.passed} />
+        <DeltaStat label="Tests failed" goodWhenUp={false} before={tests.base.failed} after={tests.target.failed} delta={tests.delta.failed} />
+        <DeltaStat label="Deployment score" goodWhenUp before={deployment.base_score} after={deployment.target_score} delta={deployment.score_delta} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <CompareColumn title="New" items={findings.new} empty="No new findings."
+          tone={{ color: C.red, bg: C.redLight, border: C.redBorder }} />
+        <CompareColumn title="Fixed" items={findings.fixed} empty="Nothing fixed since the earlier scan."
+          tone={{ color: C.green, bg: C.greenLight, border: C.greenBorder }} />
+        <CompareColumn title="Unchanged" items={findings.unchanged} empty="No findings carried over."
+          tone={{ color: C.textMuted, bg: C.surfaceHigh, border: C.border }} />
+      </div>
+
+      {tests.changes.length > 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" }}>
+          <SectionHeader title="Test results that changed" count={tests.changes.length} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {tests.changes.map((c, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${C.border}60`, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: mono, color: C.textSub, wordBreak: "break-all" }}>{c.method} {c.endpoint} · {c.test.replace(/_/g, " ")}</span>
+                <span style={{ fontFamily: mono }}>
+                  <span style={{ color: OUTCOME_COLOR[c.before] }}>{c.before}{c.status_before ? ` (${c.status_before})` : ""}</span>
+                  <span style={{ color: C.textFaint }}> → </span>
+                  <span style={{ color: OUTCOME_COLOR[c.after], fontWeight: 600 }}>{c.after}{c.status_after ? ` (${c.status_after})` : ""}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1208,10 +1372,24 @@ function BaselineView({ report, onRecheck }) {
 }
 
 // ─── Report View ──────────────────────────────────────────────────
-function ReportView({ report, onRescan, onRecheck, specId }) {
+function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch }) {
   const [tab, setTab] = useState("security");
+  // Comparison: null | {picking: true} | {loading} | {data} | {error}
+  const [cmp, setCmp] = useState(null);
   if (isBaselineReport(report)) return <BaselineView report={report} onRecheck={onRecheck} />;
   const s = report.summary || {};
+
+  const startCompare = async (earlier) => {
+    setCmp({ loading: true });
+    try {
+      const data = await apiFetch(`/api/scans/compare?base=${encodeURIComponent(earlier.id)}&target=${encodeURIComponent(scanId)}`);
+      setCmp({ data });
+    } catch (e) {
+      setCmp({ picking: true, error: e.message || "Comparison failed" });
+    }
+  };
+
+  if (cmp?.data) return <CompareView data={cmp.data} onBack={() => setCmp(null)} />;
 
   const exportJSON = () => exportReportJSON(report);
 
@@ -1226,7 +1404,15 @@ function ReportView({ report, onRescan, onRecheck, specId }) {
 
   return (
     <div>
-      <ScanHeader report={report} />
+      <ScanHeader report={report}
+        onCompare={scanId && apiFetch ? () => setCmp({ picking: true }) : undefined} />
+      {cmp?.picking && (
+        <>
+          {cmp.error && <div style={{ fontFamily: sans, fontSize: 13, color: C.red, marginBottom: 8 }}>{cmp.error}</div>}
+          <ComparePicker apiFetch={apiFetch} scanId={scanId} onPick={startCompare} onCancel={() => setCmp(null)} />
+        </>
+      )}
+      {cmp?.loading && <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted, marginBottom: 12 }}>Comparing…</div>}
       <SeveritySummary summary={s} deepScanPerformed={report.deep_scan_performed} deepScanCount={report.deep_scan_summary?.findings_enriched} />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontFamily: sans, fontSize: 13 }}>
@@ -1727,7 +1913,9 @@ export default function App() {
           {streaming && streamEvents.length > 0 && <ScanProgress events={streamEvents} />}
 
           {report && !streaming && (
-            <ReportView report={report} specId={specId} onRescan={() => runScanStream(specId)}
+            <ReportView key={activeScanId || "none"} report={report} specId={specId}
+              scanId={activeScanId} apiFetch={apiFetch}
+              onRescan={() => runScanStream(specId)}
               onRecheck={(url) => { setApiUrl(url); scanUrl(url); }} />
           )}
 
@@ -1748,4 +1936,4 @@ export default function App() {
   );
 }
 // Named exports for tests
-export { ScanOptionsPanel, TestResults, ScanHeader };
+export { ScanOptionsPanel, TestResults, ScanHeader, ReportView, CompareView };

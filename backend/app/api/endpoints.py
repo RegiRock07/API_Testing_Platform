@@ -20,6 +20,7 @@ import requests
 from app.schemas.api_spec import APISpecUpload, APISpecResponse, ScanOptions
 from app.services.spec_parser import SpecParser
 from app.services.baseline import run_baseline_checks
+from app.services.compare import compare_reports
 from app.orchestrator import Orchestrator
 from app.database import list_scans, get_scan, delete_scan, save_report, save_scan
 from app.api.firebase_auth import AuthDep
@@ -80,6 +81,42 @@ def _require_spec_scan(spec_id: str) -> dict:
 @router.get("/api/scans", dependencies=[AuthDep])
 def get_scan_history():
     return list_scans(limit=100)
+
+
+# Declared before /api/scans/{scan_id}/... so "compare" is never read as an id
+@router.get("/api/scans/compare", dependencies=[AuthDep])
+def compare_scans(base: str, target: str):
+    """
+    What changed between two scans of the same API. `base` is the older
+    scan, `target` the newer. Findings are matched by their `id`.
+    """
+    if base == target:
+        raise HTTPException(status_code=400, detail="Pick two different scans to compare")
+
+    scans = {}
+    for role, scan_id in (("base", base), ("target", target)):
+        scan = get_scan(scan_id)
+        if not scan:
+            raise HTTPException(status_code=404, detail=f"{role} scan {scan_id} not found")
+        report = scan.get("report")
+        if not report:
+            raise HTTPException(status_code=400, detail=f"{role} scan {scan_id} has no report yet")
+        if report.get("scan_type") == "baseline":
+            raise HTTPException(status_code=400,
+                                detail=f"{role} scan {scan_id} is a baseline (no-spec) scan; nothing to compare")
+        scans[role] = scan
+
+    def meta(scan: dict) -> dict:
+        return {"id": scan["id"], "name": scan.get("name"), "api_title": scan.get("api_title"),
+                "created_at": scan.get("created_at"), "endpoint_count": scan.get("endpoint_count"),
+                "base_url": (scan.get("parsed_data") or {}).get("base_url")}
+
+    return {
+        "base":     meta(scans["base"]),
+        "target":   meta(scans["target"]),
+        "same_api": scans["base"].get("api_title") == scans["target"].get("api_title"),
+        **compare_reports(scans["base"]["report"], scans["target"]["report"]),
+    }
 
 
 @router.get("/api/scans/{scan_id}/report", dependencies=[AuthDep])
