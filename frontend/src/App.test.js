@@ -1,8 +1,16 @@
-import { render, screen } from '@testing-library/react';
-import App from './App';
+import { render, screen } from "@testing-library/react";
+import App from "./App";
 
-test('renders learn react link', () => {
+// No real Firebase in tests: report "signed out" so App shows the login screen.
+jest.mock("./firebase", () => ({
+  onAuth: (callback) => { callback(null); return () => {}; },
+  signInWithGoogle: jest.fn(),
+  signOut: jest.fn(),
+  getIdToken: jest.fn(),
+}));
+
+test("renders the login screen when signed out", async () => {
   render(<App />);
-  const linkElement = screen.getByText(/learn react/i);
-  expect(linkElement).toBeInTheDocument();
+  expect(await screen.findByRole("button", { name: /continue with google/i })).toBeInTheDocument();
+  expect(screen.getByText(/sign in to continue/i)).toBeInTheDocument();
 });
