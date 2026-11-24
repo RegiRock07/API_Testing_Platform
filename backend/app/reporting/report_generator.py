@@ -9,7 +9,6 @@
 #  - Recommendations deduplicated with ordered list (no set() shuffling)
 #  - Backward compatible — old finding format (risk_type) still works
 
-from collections import Counter
 
 
 class ReportGenerator:

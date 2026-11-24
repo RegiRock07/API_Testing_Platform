@@ -1,0 +1,8 @@
+# The image runs `npm ci` itself; copying the host's node_modules
+# (possibly built for another OS) over it would break the build.
+node_modules/
+build/
+coverage/
+.env.local
+.env.*.local
+npm-debug.log*

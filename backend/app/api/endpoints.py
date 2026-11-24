@@ -9,7 +9,7 @@
 #    the scan with /api/run/{id}/stream
 #  - /api/scan-url is the older blocking variant and shares the discovery code
 
-from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Body, HTTPException, UploadFile, File, Form, Response
 from pydantic import BaseModel
 from typing import Optional
 from urllib.parse import urlparse
@@ -21,6 +21,7 @@ from app.schemas.api_spec import APISpecUpload, APISpecResponse, ScanOptions
 from app.services.spec_parser import SpecParser
 from app.services.baseline import run_baseline_checks
 from app.services.compare import compare_reports
+from app.reporting.pdf_report import build_report_pdf, report_pdf_filename
 from app.orchestrator import Orchestrator
 from app.database import list_scans, get_scan, delete_scan, save_report, save_scan
 from app.api.firebase_auth import AuthDep
@@ -127,6 +128,26 @@ def get_scan_report(scan_id: str):
     if not scan.get("report"):
         raise HTTPException(status_code=404, detail="Report not yet generated")
     return scan["report"]
+
+
+# Plain `def`: rendering is CPU-bound, so FastAPI runs it in the threadpool
+@router.get("/api/scans/{scan_id}/report/pdf", dependencies=[AuthDep])
+def get_scan_report_pdf(scan_id: str):
+    scan = get_scan(scan_id)
+    if not scan:
+        raise HTTPException(status_code=404, detail="Scan not found")
+    report = scan.get("report")
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not yet generated")
+    if report.get("scan_type") == "baseline":
+        raise HTTPException(status_code=400,
+                            detail="PDF export is only available for spec-based scans; "
+                                   "use Export JSON for baseline (no-spec) checks")
+    pdf = build_report_pdf(scan)
+    return Response(content=pdf, media_type="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="{report_pdf_filename(scan)}"',
+        "Cache-Control":       "no-store",
+    })
 
 
 @router.delete("/api/scans/{scan_id}", dependencies=[AuthDep])

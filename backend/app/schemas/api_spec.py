@@ -1,6 +1,6 @@
 # backend/app/schemas/api_spec.py
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from typing import Dict, Any, Literal, Optional
 
 class APISpecUpload(BaseModel):
@@ -26,6 +26,17 @@ class ScanAuth(BaseModel):
     type:        Literal["bearer", "api_key", "basic"] = "bearer"
     value:       str
     header_name: Optional[str] = None   # api_key only, default X-API-Key
+
+    # A blank credential used to run the scan unauthenticated (or, if it was
+    # only whitespace, send an empty "Bearer " header while the report said
+    # "authenticated"). Reject it instead; omit `auth` for no credentials.
+    @field_validator("value")
+    @classmethod
+    def _value_not_blank(cls, v: str) -> str:
+        v = v.strip()
+        if not v:
+            raise ValueError("auth.value must not be empty; omit `auth` to scan without credentials")
+        return v
 
 class ScanOptions(BaseModel):
     safe_mode: bool = True              # never send DELETE/PUT/PATCH

@@ -15,11 +15,10 @@
 #  - Safe mode (default ON): never sends DELETE/PUT/PATCH to the target
 #  - Endpoints tested in parallel inside a time budget -> partial results
 #    instead of losing everything on a timeout
-#  - Every test keeps request/response evidence for the Verifier Agent
+#  - Every test keeps request/response evidence (shown in the report)
 
 from __future__ import annotations
 
-import re
 import time
 import logging
 from concurrent.futures import ThreadPoolExecutor

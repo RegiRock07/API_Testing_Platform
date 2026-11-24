@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, TypedDict
 
 from langchain_core.runnables import RunnableConfig
@@ -335,6 +336,9 @@ def report_node(state: ScanState) -> dict:
     }
 
     report = ReportGenerator().generate(agent_output)
+    # Re-scans replace the report inside the same scan row, so the row's
+    # created_at is not the date of this report; record it here.
+    report["generated_at"] = datetime.now(timezone.utc).isoformat()
 
     planner_result  = state.get("planner_result", {})
     test_gen_result = state.get("test_generation_result", {})

@@ -193,7 +193,7 @@ class SecurityAgent:
 
         findings = list(seen.values())
 
-        # Stable unique id per finding — used by the Verifier and Deep Scan
+        # Stable unique id per finding — used by Deep Scan and scan comparison
         # to match findings (old key (endpoint, risk_type) collided when the
         # same path had e.g. both POST and PUT findings).
         for f in findings:
