@@ -1,15 +1,26 @@
-# env files with real secrets
+# Env files with real secrets (.env.example and frontend/.env.development /
+# .env.production hold no secrets and are tracked)
 .env
-frontend/.env.local
+.env.local
+.env.*.local
+
+# Python
 __pycache__/
 *.pyc
+.venv/
 
-# SQLite database
+# Node / React
+node_modules/
+build/
+coverage/
+npm-debug.log*
+
+# SQLite database (backend/sentinel.db by default)
 *.db
 
 # Docker volumes
 sentinel_data/
-.venv/
-node_modules/
-.DS_Store
 
+# OS
+.DS_Store
+Thumbs.db

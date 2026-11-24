@@ -11,7 +11,6 @@
 
 from __future__ import annotations
 
-import copy
 from typing import Dict, Any, Optional
 from urllib.parse import urljoin, urlparse
 

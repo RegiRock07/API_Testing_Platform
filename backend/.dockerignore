@@ -1,0 +1,8 @@
+# Keep local state and secrets out of the image
+__pycache__/
+*.pyc
+*.db
+.env
+.env.*
+.venv/
+package-lock.json

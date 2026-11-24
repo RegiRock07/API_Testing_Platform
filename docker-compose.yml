@@ -1,11 +1,9 @@
-version: "3.9"
-
 # ─────────────────────────────────────────────────────────
-#  API Sentinel — docker-compose
+#  API Sentinel — docker compose
 #
-#  Quick start (dev):
-#    cp .env.example .env   # fill in GROQ_API_KEY
-#    docker-compose up
+#  Quick start:
+#    cp .env.example .env   # optionally fill in GROQ_API_KEY
+#    docker compose up --build
 #
 #  Access:
 #    Frontend  →  http://localhost:3000
@@ -52,8 +50,9 @@ services:
       # Seconds before a Groq/Gemini call is abandoned
       - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-45}
 
-      # Ollama — only needed if LLM_PROVIDER=ollama
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      # Ollama — only needed if LLM_PROVIDER=ollama. Inside the container
+      # "localhost" is the container itself; reach Ollama on the host instead.
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OLLAMA_DEFAULT_MODEL=${OLLAMA_DEFAULT_MODEL:-llama3.1:8b}
       - OLLAMA_TIMEOUT=${OLLAMA_TIMEOUT:-60}
 
@@ -66,6 +65,10 @@ services:
     volumes:
       - sentinel_data:/data
 
+    # Makes host.docker.internal resolve on Linux too (built in on Docker Desktop)
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
     # python:3.11-slim has no curl — use the interpreter that's already there.
     # urlopen raises on connection errors and non-2xx, giving a non-zero exit.
     healthcheck:
@@ -74,6 +77,7 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+      start_interval: 5s   # probe often while starting (Docker Engine 25+)
 
   frontend:
     build:
@@ -86,7 +90,8 @@ services:
     ports:
       - "3000:80"
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
 
 volumes:
   sentinel_data:
