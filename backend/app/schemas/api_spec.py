@@ -7,12 +7,16 @@ class APISpecUpload(BaseModel):
     spec: Dict[str, Any]  # OpenAPI spec as JSON
     name: str
     description: str = ""
+    # Target to test. Overrides whatever the spec's `servers` say — needed
+    # when the spec has no servers or only relative ones (e.g. "/api/v3").
+    base_url: Optional[str] = None
 
 class APISpecResponse(BaseModel):
     id: str
     name: str
     status: str
     endpoints_count: int
+    base_url: Optional[str] = None      # target that will be scanned (None = no target)
 
 
 # ── Scan options (body of /api/run/{id} and /api/run/{id}/stream) ──

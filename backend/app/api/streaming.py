@@ -56,6 +56,9 @@ async def run_agents_stream(spec_id: str, options: Optional[ScanOptions] = Body(
     scan = spec_parser.get_spec(spec_id)
     if not scan:
         raise HTTPException(status_code=404, detail="Spec not found")
+    if (scan.get("parsed_data") or {}).get("scan_type") == "baseline":
+        raise HTTPException(status_code=400,
+                            detail="This is a baseline (no-spec) scan; there is no spec to run agents on.")
 
     parsed_data  = scan["parsed_data"]
     scan_options = (options or ScanOptions()).to_state()

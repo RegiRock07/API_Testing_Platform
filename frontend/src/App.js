@@ -1048,18 +1048,132 @@ function ScanHeader({ report }) {
   );
 }
 
+// ─── Baseline (no-spec) View ──────────────────────────────────────
+const exportReportJSON = (report) => {
+  const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement("a");
+  a.href = url; a.download = `sentinel-report-${Date.now()}.json`; a.click();
+  URL.revokeObjectURL(url);
+};
+
+// Old /api/scan-url responses returned the raw check dict; new ones wrap it.
+const isBaselineReport = (r) =>
+  !!r && (r.scan_type === "baseline" || (!r.summary && r.security_headers && r.cors && "exposed_paths" in r));
+
+const RISKY_METHODS = ["PUT", "DELETE", "PATCH", "TRACE", "CONNECT"];
+
+function BaselineCard({ title, status, children }) {
+  const tone = {
+    good: { color: C.green,     bg: C.greenLight,  border: C.greenBorder,  label: "OK"     },
+    warn: { color: C.yellow,    bg: C.yellowLight, border: C.yellowBorder, label: "Review" },
+    bad:  { color: C.red,       bg: C.redLight,    border: C.redBorder,    label: "Issue"  },
+    info: { color: C.textMuted, bg: C.surfaceHigh, border: C.border,       label: "Info"   },
+  }[status] || {};
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderLeft: `3px solid ${tone.color}`, borderRadius: 10, padding: "16px 18px", boxShadow: C.shadow }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+        <span style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>{title}</span>
+        <Badge label={tone.label} color={tone.color} bg={tone.bg} border={tone.border} small />
+      </div>
+      <div style={{ fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>{children}</div>
+    </div>
+  );
+}
+
+function BaselineView({ report, onRecheck }) {
+  const b        = report.baseline || report;           // tolerate the old raw shape
+  const baseUrl  = report.base_url || "";
+  const isHttps  = baseUrl.startsWith("https://");
+  const ssl      = b.ssl || {};
+  const headers  = b.security_headers || { present: [], missing: [] };
+  const cors     = b.cors || {};
+  const exposed  = b.exposed_paths || [];
+  const methods  = b.allowed_methods || [];
+  const risky    = methods.filter(m => RISKY_METHODS.includes(m.toUpperCase()));
+
+  const sslStatus     = !isHttps ? "bad" : ssl.valid && ssl.enforced ? "good" : ssl.valid ? "warn" : "bad";
+  const headerStatus  = headers.missing?.length === 0 ? "good" : headers.present?.length === 0 ? "bad" : "warn";
+  const corsStatus    = cors.misconfigured ? "bad" : "good";
+  const exposedStatus = exposed.length ? "bad" : "good";
+  const methodStatus  = !methods.length ? "info" : risky.length ? "warn" : "good";
+
+  return (
+    <div>
+      <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "16px 20px", marginBottom: 16, boxShadow: C.shadow, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+        <div style={{ minWidth: 0 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+            <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>Baseline checks</span>
+            <Badge label="No OpenAPI spec found" color={C.yellow} bg={C.yellowLight} border={C.yellowBorder} small />
+          </div>
+          {baseUrl && <div style={{ fontFamily: mono, fontSize: 12, color: C.textMuted, wordBreak: "break-all" }}>{baseUrl}</div>}
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {onRecheck && baseUrl && <Btn onClick={() => onRecheck(baseUrl)} variant="ghost" small>↺ Re-check</Btn>}
+          <Btn onClick={() => exportReportJSON(report)} variant="subtle" small>↓ Export JSON</Btn>
+        </div>
+      </div>
+
+      <div style={{ background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontFamily: sans, fontSize: 13, color: C.textSub, lineHeight: 1.6 }}>
+        Endpoint tests need a spec. {report.tip || "Enter the spec URL directly, or upload the spec with a target base URL."}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+        <BaselineCard title="SSL / TLS" status={sslStatus}>
+          {!isHttps
+            ? "Served over plain HTTP. Traffic and credentials are not encrypted."
+            : <>
+                <div>Certificate: <strong>{ssl.valid ? "valid" : "invalid or unreachable"}</strong></div>
+                <div>HTTP → HTTPS redirect: <strong>{ssl.enforced ? "enforced" : "not enforced"}</strong></div>
+              </>}
+        </BaselineCard>
+
+        <BaselineCard title="Security headers" status={headerStatus}>
+          <div style={{ marginBottom: 6 }}>{headers.present?.length || 0} of {(headers.present?.length || 0) + (headers.missing?.length || 0)} present</div>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {headers.present?.map(h => <Badge key={h} label={`✓ ${h}`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />)}
+            {headers.missing?.map(h => <Badge key={h} label={`✗ ${h}`} color={C.red} bg={C.redLight} border={C.redBorder} small />)}
+          </div>
+        </BaselineCard>
+
+        <BaselineCard title="CORS" status={corsStatus}>
+          <div><strong>{cors.misconfigured ? "Misconfigured" : "No misconfiguration detected"}</strong></div>
+          {cors.detail && <div style={{ color: C.textMuted, marginTop: 4 }}>{cors.detail}</div>}
+        </BaselineCard>
+
+        <BaselineCard title="Exposed paths" status={exposedStatus}>
+          {exposed.length === 0
+            ? "None of the probed sensitive paths (/.env, /.git/config, /admin, …) returned 200."
+            : <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                {exposed.map(p => <code key={p} style={{ fontFamily: mono, fontSize: 12, color: C.red }}>{p} → 200 OK</code>)}
+              </div>}
+        </BaselineCard>
+
+        <BaselineCard title="Allowed methods" status={methodStatus}>
+          {methods.length === 0
+            ? "The server did not advertise allowed methods (no Allow header on OPTIONS)."
+            : <>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: risky.length ? 6 : 0 }}>
+                  {methods.map(m => {
+                    const bad = RISKY_METHODS.includes(m.toUpperCase());
+                    return <Badge key={m} label={m} color={bad ? C.yellow : C.textMuted} bg={bad ? C.yellowLight : C.surfaceHigh} border={bad ? C.yellowBorder : C.border} small />;
+                  })}
+                </div>
+                {risky.length > 0 && <div style={{ color: C.textMuted }}>Check that {risky.join(", ")} require authentication.</div>}
+              </>}
+        </BaselineCard>
+      </div>
+    </div>
+  );
+}
+
 // ─── Report View ──────────────────────────────────────────────────
-function ReportView({ report, onRescan, specId }) {
+function ReportView({ report, onRescan, onRecheck, specId }) {
   const [tab, setTab] = useState("security");
+  if (isBaselineReport(report)) return <BaselineView report={report} onRecheck={onRecheck} />;
   const s = report.summary || {};
 
-  const exportJSON = () => {
-    const blob = new Blob([JSON.stringify(report, null, 2)], { type: "application/json" });
-    const url  = URL.createObjectURL(blob);
-    const a    = document.createElement("a");
-    a.href = url; a.download = `sentinel-report-${Date.now()}.json`; a.click();
-    URL.revokeObjectURL(url);
-  };
+  const exportJSON = () => exportReportJSON(report);
 
   const tabs = [
     { key: "security",   label: "Security",        count: s.total_security_findings },
@@ -1147,6 +1261,21 @@ function InputPanel({ title, children }) {
   );
 }
 
+// Optional target base URL for pasted / uploaded specs
+function TargetUrlField({ value, onChange }) {
+  return (
+    <div style={{ marginBottom: 12 }}>
+      <label style={{ display: "block", fontFamily: sans, fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>
+        Target base URL <span style={{ fontWeight: 400, color: C.textFaint }}>(optional)</span>
+      </label>
+      <Input value={value} onChange={e => onChange(e.target.value)} placeholder="https://api.yourcompany.com" />
+      <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 4 }}>
+        Overrides the spec's <code style={{ fontFamily: mono }}>servers</code>. Needed if it has none.
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────
 export default function App() {
   // ── Firebase auth state ────────────────────────────────────────
@@ -1192,6 +1321,9 @@ export default function App() {
   const [specId,       setSpecId]       = useState(null);
   const [file,         setFile]         = useState(null);
   const [apiUrl,       setApiUrl]       = useState("");
+  const [pasteBaseUrl, setPasteBaseUrl] = useState("");   // optional target for pasted spec
+  const [fileBaseUrl,  setFileBaseUrl]  = useState("");   // optional target for uploaded file
+  const [specTarget,   setSpecTarget]   = useState(undefined); // base_url the backend will scan
   const [report,       setReport]       = useState(null);
   const [activeScanId, setActiveScanId] = useState(null);
   const [loading,      setLoading]      = useState(false);
@@ -1212,19 +1344,24 @@ export default function App() {
     let parsed;
     try { parsed = JSON.parse(specText); }
     catch { throw new Error("Invalid JSON — please check the spec format"); }
+    const body = { name: "uploaded_spec", spec: parsed };
+    if (pasteBaseUrl.trim()) body.base_url = pasteBaseUrl.trim();
     const data = await apiFetch("/api/specs/upload", {
       method: "POST",
-      body: JSON.stringify({ name: "uploaded_spec", spec: parsed }),
+      body: JSON.stringify(body),
     });
-    setSpecId(data.id); setActiveScanId(data.id);
+    setReport(null); setSpecId(data.id); setActiveScanId(data.id); setSpecTarget(data.base_url ?? null);
+    setSidebarKey(k => k + 1);
   });
 
   const uploadFile = () => wrap(async () => {
     if (!file) throw new Error("No file selected");
     const form = new FormData();
     form.append("file", file);
+    if (fileBaseUrl.trim()) form.append("base_url", fileBaseUrl.trim());
     const data = await apiUpload("/api/specs/upload-file", form);
-    setSpecId(data.id); setActiveScanId(data.id);
+    setReport(null); setSpecId(data.id); setActiveScanId(data.id); setSpecTarget(data.base_url ?? null);
+    setSidebarKey(k => k + 1);
   });
 
   const runScanStream = async (sid) => {
@@ -1272,25 +1409,42 @@ export default function App() {
     }
   };
 
-  const scanUrl = () => wrap(async () => {
-    if (!apiUrl) throw new Error("Please enter a URL");
-    const data = await apiFetch("/api/scan-url", {
-      method: "POST",
-      body: JSON.stringify({ base_url: apiUrl }),
-    });
-    setReport(data.result || data);
-    setActiveScanId(data.spec_id || null);
+  // Discover the spec (or run baseline checks), then stream the scan with
+  // the same progress UI as uploads.
+  const scanUrl = async (urlOverride) => {
+    const url = (typeof urlOverride === "string" ? urlOverride : apiUrl).trim();
+    if (!url) { setError("Please enter a URL"); return; }
+    setLoading(true); setError(""); setReport(null); setSpecId(null);
+    let data;
+    try {
+      data = await apiFetch("/api/scan-url/discover", {
+        method: "POST",
+        body: JSON.stringify({ base_url: url }),
+      });
+    } catch (e) {
+      setError(e.message || "Discovery failed");
+      return;
+    } finally {
+      setLoading(false);
+    }
+    setActiveScanId(data.spec_id);
     setSidebarKey(k => k + 1);
-  });
+    if (data.spec_found) {
+      setSpecId(data.spec_id); setSpecTarget(data.base_url ?? null);
+      await runScanStream(data.spec_id);
+    } else {
+      setReport(data.report);          // baseline result, already saved as a scan
+    }
+  };
 
   const loadHistoryScan = async (scan) => {
-    setError(""); setActiveScanId(scan.id);
+    setError(""); setActiveScanId(scan.id); setSpecTarget(undefined);
     if (scan.status !== "completed") {
       setReport(null); setSpecId(scan.id); return;
     }
     try {
       const rep = await apiFetch(`/api/scans/${scan.id}/report`);
-      setReport(rep); setSpecId(scan.id);
+      setReport(rep); setSpecId(isBaselineReport(rep) ? null : scan.id);
     } catch (e) { setError(e.message); }
   };
 
@@ -1383,6 +1537,7 @@ export default function App() {
               <textarea rows={6} value={specText} onChange={e => setSpecText(e.target.value)}
                 placeholder={"{\n  \"openapi\": \"3.0.0\",\n  ...\n}"}
                 style={{ fontFamily: mono, fontSize: 11, background: C.surfaceHigh, color: C.text, border: `1px solid ${C.border}`, borderRadius: 7, padding: 10, width: "100%", resize: "vertical", outline: "none", marginBottom: 12, boxSizing: "border-box", lineHeight: 1.5 }} />
+              <TargetUrlField value={pasteBaseUrl} onChange={setPasteBaseUrl} />
               <Btn onClick={uploadSpec} disabled={loading || streaming || !specText}>Upload Spec</Btn>
             </InputPanel>
 
@@ -1394,14 +1549,15 @@ export default function App() {
                   {file ? file.name : "Click to select .json / .yaml"}
                 </div>
               </label>
+              <TargetUrlField value={fileBaseUrl} onChange={setFileBaseUrl} />
               <Btn onClick={uploadFile} disabled={loading || streaming || !file}>Upload File</Btn>
             </InputPanel>
 
             <InputPanel title="Scan API URL">
               <div style={{ marginBottom: 12 }}>
                 <Input value={apiUrl} onChange={e => setApiUrl(e.target.value)} placeholder="https://api.yourcompany.com" style={{ marginBottom: 8 }} />
-                <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 4 }}>
-                  Auto-discovers OpenAPI spec at common paths
+                <div style={{ fontFamily: sans, fontSize: 11, color: C.textFaint, marginTop: 4, lineHeight: 1.5 }}>
+                  API root (spec auto-discovered at common paths) or the spec URL itself, e.g. https://host/api/v3/openapi.json
                 </div>
               </div>
               <Btn onClick={scanUrl} disabled={loading || streaming || !apiUrl}>Scan URL</Btn>
@@ -1414,6 +1570,14 @@ export default function App() {
               <div>
                 <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>Spec uploaded successfully</div>
                 <div style={{ fontFamily: mono, fontSize: 11, color: C.textFaint }}>ID: {specId}</div>
+                {specTarget && (
+                  <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted, marginTop: 2 }}>Target: {specTarget}</div>
+                )}
+                {specTarget === null && (
+                  <div style={{ fontFamily: sans, fontSize: 12, color: C.yellow, marginTop: 4 }}>
+                    No target URL: the spec has no absolute <code style={{ fontFamily: mono }}>servers</code> entry, so API tests and deployment checks will be skipped. Set "Target base URL" and upload again.
+                  </div>
+                )}
               </div>
               <Btn onClick={() => runScanStream(specId)} disabled={streaming}>▶ Run Security Scan</Btn>
             </div>
@@ -1422,7 +1586,8 @@ export default function App() {
           {streaming && streamEvents.length > 0 && <ScanProgress events={streamEvents} />}
 
           {report && !streaming && (
-            <ReportView report={report} specId={specId} onRescan={() => runScanStream(specId)} />
+            <ReportView report={report} specId={specId} onRescan={() => runScanStream(specId)}
+              onRecheck={(url) => { setApiUrl(url); scanUrl(url); }} />
           )}
 
           {!report && !specId && !streaming && (

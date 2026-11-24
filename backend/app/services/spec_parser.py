@@ -67,6 +67,11 @@ class SpecParser:
                     return url.rstrip("/")
                 if spec_url:                               # relative server URL
                     return urljoin(spec_url, url).rstrip("/")
+            elif spec_url:
+                # OAS3: no `servers` means a single server "/" — relative to
+                # the document's location, i.e. the spec URL's origin.
+                p = urlparse(spec_url)
+                return f"{p.scheme}://{p.netloc}"
             return None
         # Swagger 2.0
         host = spec.get("host")
