@@ -1,10 +1,21 @@
-fastapi
-uvicorn
-requests
-pyyaml
-python-multipart
-langgraph
-groq
-python-dotenv
-google-genai
-firebase-admin
+# Direct dependencies, pinned to the versions the app was last run and
+# tested with (2026-11-24). Upgrade deliberately: bump, reinstall, re-test.
+
+fastapi==0.165.0
+uvicorn==0.54.0
+requests==2.34.2
+pyyaml==6.0.4
+python-multipart==0.0.34
+pydantic==2.14.4
+python-dotenv==1.2.4
+
+# Agent pipeline
+langgraph==1.2.24
+langchain-core==1.8.4          # imported directly (RunnableConfig)
+
+# LLM providers
+groq==1.7.0
+google-genai==3.6.1
+
+# Auth
+firebase-admin==7.8.0

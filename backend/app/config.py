@@ -28,6 +28,20 @@ GROQ_MODEL_FALLBACK = os.getenv("GROQ_MODEL_FALLBACK") or _DEFAULT_GROQ_FALLBACK
 GROQ_MODEL          = GROQ_MODEL_PRIMARY  # back-compat alias
 GROQ_API_KEY        = os.getenv("GROQ_API_KEY", "")
 
+# ── Timeouts ──────────────────────────────────────────────────────
+# Hard per-request limit for Groq and Gemini calls. SDK retries are off,
+# so a slow model costs at most this long before llm_service moves on to
+# the fallback model (Groq) or raises LLMError (the agent's rule-based
+# fallback then runs).
+def _float_env(name: str, default: float) -> float:
+    try:
+        return float(os.getenv(name, default))
+    except ValueError:
+        logger.warning(f"[Config] {name} is not a number; using {default}")
+        return default
+
+LLM_TIMEOUT_SECONDS = _float_env("LLM_TIMEOUT_SECONDS", 45.0)
+
 # ── Gemini ────────────────────────────────────────────────────────
 # Current stable Flash model (gemini-1.5/2.0 Flash are shut down).
 GEMINI_MODEL = os.getenv("GEMINI_MODEL") or "gemini-3.8-flash"

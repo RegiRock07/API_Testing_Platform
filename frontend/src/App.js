@@ -1,4 +1,9 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { createSSEParser, SSE_DONE } from "./sse";
+import {
+  AUTH_TYPES, AUTH_VALUE_PLACEHOLDER, DEFAULT_API_KEY_HEADER, DEFAULT_SCAN_OPTIONS,
+  buildScanRequestBody, describeScanOptions,
+} from "./scanOptions";
 import { signInWithGoogle, signOut, onAuth, getIdToken } from "./firebase";
 
 // ─── Config ───────────────────────────────────────────────────────
@@ -252,9 +257,9 @@ function Btn({ onClick, children, variant = "primary", disabled, small }) {
   );
 }
 
-function Input({ value, onChange, placeholder, type = "text", style = {} }) {
+function Input({ value, onChange, placeholder, type = "text", style = {}, ...rest }) {
   return (
-    <input type={type} value={value} onChange={onChange} placeholder={placeholder}
+    <input type={type} value={value} onChange={onChange} placeholder={placeholder} {...rest}
       style={{
         fontFamily: sans, fontSize: 13,
         background: C.surface, color: C.text,
@@ -827,6 +832,9 @@ function SecurityTable({ findings = [] }) {
 }
 
 // ─── API Test Results ─────────────────────────────────────────────
+// passed === null: not run (safe mode, time budget, network error) — neither pass nor fail
+const isSkipped = (t) => t.skipped === true || t.passed === null;
+
 function TestResults({ results = [] }) {
   const [open, setOpen] = useState(null);
   if (!results.length) return (
@@ -835,17 +843,22 @@ function TestResults({ results = [] }) {
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
       {results.map((ep, i) => {
-        const tests  = ep.tests || [];
-        const passed = tests.filter(t => t.passed === true).length;
-        const failed = tests.filter(t => t.passed === false).length;
-        const isOpen = open === i;
+        const tests   = ep.tests || [];
+        const passed  = tests.filter(t => t.passed === true).length;
+        const failed  = tests.filter(t => t.passed === false).length;
+        const skipped = tests.filter(isSkipped).length;
+        const safeModeSkip = tests.some(t => t.test === "skipped_safe_mode");
+        const isOpen  = open === i;
         return (
           <div key={i} style={{ border: `1px solid ${isOpen ? C.accentBorder : C.border}`, borderRadius: 8, overflow: "hidden", background: C.surface }}>
             <div onClick={() => setOpen(isOpen ? null : i)} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "12px 16px", cursor: "pointer", background: isOpen ? C.accentLight : "transparent" }}>
               <span style={{ fontFamily: mono, fontSize: 12, color: C.accent, fontWeight: 600 }}>{ep.method} {ep.endpoint}</span>
               <span style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                <Badge label={`${passed} passed`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />
+                {safeModeSkip
+                  ? <Badge label="Skipped (safe mode)" color={C.textMuted} bg={C.surfaceHigh} border={C.border} small />
+                  : <Badge label={`${passed} passed`} color={C.green} bg={C.greenLight} border={C.greenBorder} small />}
                 {failed > 0 && <Badge label={`${failed} failed`} color={C.red} bg={C.redLight} border={C.redBorder} small />}
+                {skipped > 0 && !safeModeSkip && <Badge label={`${skipped} skipped`} color={C.textMuted} bg={C.surfaceHigh} border={C.border} small />}}
                 <span style={{ color: C.textFaint, fontSize: 12 }}>{isOpen ? "▲" : "▼"}</span>
               </span>
             </div>
@@ -868,13 +881,27 @@ function TestResults({ results = [] }) {
                       ))}
                     </div>
                   );
+                  if (t.test === "skipped_safe_mode") return (
+                    <div key={j} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 16px", borderBottom: `1px solid ${C.border}18` }}>
+                      <span style={{ fontFamily: sans, fontSize: 13, color: C.textMuted }}>
+                        Not sent: {ep.method} could change data on the target. Turn off safe mode in Scan options to test it.
+                      </span>
+                      <Badge label="Skipped (safe mode)" color={C.textMuted} bg={C.surfaceHigh} border={C.border} small />
+                    </div>
+                  );
+                  const skip = isSkipped(t);
+                  const badge = skip
+                    ? { label: "Skipped", color: C.textMuted, bg: C.surfaceHigh, border: C.border }
+                    : t.passed
+                      ? { label: "Pass", color: C.green, bg: C.greenLight, border: C.greenBorder }
+                      : { label: "Fail", color: C.red,   bg: C.redLight,   border: C.redBorder };
                   return (
                     <div key={j} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 16px", borderBottom: `1px solid ${C.border}18` }}>
                       <span style={{ fontFamily: sans, fontSize: 13, color: C.textSub }}>{t.test.replace(/_/g, " ")}</span>
                       <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
                         {t.status_code && <span style={{ fontFamily: mono, fontSize: 12, color: C.textFaint }}>HTTP {t.status_code}</span>}
-                        {t.error && <span style={{ fontFamily: mono, fontSize: 11, color: C.red }}>{t.error.slice(0, 50)}</span>}
-                        <Badge label={t.passed ? "Pass" : "Fail"} color={t.passed ? C.green : C.red} bg={t.passed ? C.greenLight : C.redLight} border={t.passed ? C.greenBorder : C.redBorder} small />
+                        {t.error && <span style={{ fontFamily: mono, fontSize: 11, color: skip ? C.textMuted : C.red }}>{t.error.slice(0, 50)}</span>}
+                        <Badge label={badge.label} color={badge.color} bg={badge.bg} border={badge.border} small />
                       </span>
                     </div>
                   );
@@ -1007,10 +1034,12 @@ function DeploymentView({ deployment }) {
 }
 
 // ─── Scan Header ──────────────────────────────────────────────────
-function ScanHeader({ report }) {
-  const plan     = report.planner_assessment || {};
-  const dep      = report.deployment || {};
-  const findings = report.security_findings || [];
+function ScanHeader({ report, onCompare }) {
+  const plan      = report.planner_assessment || {};
+  const dep       = report.deployment || {};
+  const findings  = report.security_findings || [];
+  const opts      = report.scan_options || {};
+  const authLabel = AUTH_TYPES.find(t => t.value === opts.auth_type)?.label;
   const worst =
     findings.some(f => f.severity === "CRITICAL") ? { label: "Critical",   color: C.red    } :
     findings.some(f => f.severity === "HIGH")     ? { label: "High risk",  color: C.red    } :
@@ -1022,13 +1051,24 @@ function ScanHeader({ report }) {
       <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <div style={{ width: 40, height: 40, borderRadius: 10, background: C.accentLight, border: `1px solid ${C.accentBorder}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, color: C.accent, flexShrink: 0 }}>⊘</div>
         <div>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 3, flexWrap: "wrap" }}>
             <span style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>{plan.title || "API Scan Report"}</span>
             {plan.auth_pattern_detected && (
               <Badge label={`Auth: ${plan.auth_pattern_detected}`}
                 color={plan.auth_pattern_detected === "none" ? C.red : C.green}
                 bg={plan.auth_pattern_detected === "none" ? C.redLight : C.greenLight}
                 border={plan.auth_pattern_detected === "none" ? C.redBorder : C.greenBorder} small />
+            )}
+            {/* How this scan ran (older reports have no scan_options) */}
+            {opts.authenticated && (
+              <Badge label={`Authenticated${authLabel ? ` · ${authLabel}` : ""}`}
+                color={C.accent} bg={C.accentLight} border={C.accentBorder} small />
+            )}
+            {opts.safe_mode === true && (
+              <Badge label="Safe mode" color={C.green} bg={C.greenLight} border={C.greenBorder} small />
+            )}
+            {opts.safe_mode === false && (
+              <Badge label="Safe mode off" color={C.yellow} bg={C.yellowLight} border={C.yellowBorder} small />
             )}
           </div>
           <div style={{ display: "flex", gap: 14, alignItems: "center", fontFamily: sans, fontSize: 12, color: C.textFaint }}>
@@ -1043,7 +1083,171 @@ function ScanHeader({ report }) {
           </div>
         </div>
       </div>
-      <Badge label={worst.label} color={worst.color} bg={`${worst.color}12`} border={`${worst.color}30`} />
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}>
+        {onCompare && <Btn onClick={onCompare} variant="ghost" small>⇄ Compare</Btn>}
+        <Badge label={worst.label} color={worst.color} bg={`${worst.color}12`} border={`${worst.color}30`} />
+      </div>
+    </div>
+  );
+}
+
+// ─── Scan comparison ──────────────────────────────────────────────
+const fmtDelta = (n) => (n > 0 ? `+${n}` : n < 0 ? `−${Math.abs(n)}` : "0");
+// goodWhenUp: is an increase an improvement (passed tests, score) or a regression (findings, failures)?
+const deltaColor = (n, goodWhenUp) => (n === 0 || n == null ? C.textFaint : (n > 0) === goodWhenUp ? C.green : C.red);
+const fmtDate = (iso) => { try { return new Date(iso + (iso?.endsWith("Z") ? "" : "Z")).toLocaleString(); } catch { return iso; } };
+
+// Lists earlier completed scans with the same API title as `scanId`.
+function ComparePicker({ apiFetch, scanId, onPick, onCancel }) {
+  const [state, setState] = useState({ loading: true, error: "", current: null, candidates: [] });
+
+  useEffect(() => {
+    let alive = true;
+    apiFetch("/api/scans")
+      .then(rows => {
+        const current = rows.find(r => r.id === scanId);
+        const candidates = current
+          ? rows.filter(r => r.id !== scanId && r.status === "completed"
+              && r.api_title === current.api_title && r.created_at < current.created_at)
+                .sort((a, b) => (a.created_at < b.created_at ? 1 : -1))
+          : [];
+        if (alive) setState({ loading: false, error: current ? "" : "This scan isn't in the history list.", current, candidates });
+      })
+      .catch(e => alive && setState(s => ({ ...s, loading: false, error: e.message || "Could not load scans" })));
+    return () => { alive = false; };
+  }, [apiFetch, scanId]);
+
+  const { loading, error, current, candidates } = state;
+  return (
+    <div role="dialog" aria-label="Compare with an earlier scan" style={{ background: C.surface, border: `1px solid ${C.accentBorder}`, borderRadius: 10, padding: "16px 18px", marginBottom: 16, boxShadow: C.shadowMd }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, gap: 12 }}>
+        <div>
+          <div style={{ fontFamily: sans, fontSize: 14, fontWeight: 700, color: C.text }}>Compare with an earlier scan</div>
+          {current && <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 2 }}>Earlier scans of <strong>{current.api_title}</strong></div>}
+        </div>
+        <Btn onClick={onCancel} variant="subtle" small>Cancel</Btn>
+      </div>
+      {loading && <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted }}>Loading scans…</div>}
+      {!loading && error && <div style={{ fontFamily: sans, fontSize: 13, color: C.red }}>{error}</div>}
+      {!loading && !error && candidates.length === 0 && (
+        <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted }}>
+          No earlier completed scans of this API yet. Scan it again later to see what changed.
+        </div>
+      )}
+      {candidates.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 280, overflowY: "auto" }}>
+          {candidates.map(s => (
+            <button key={s.id} type="button" onClick={() => onPick(s)}
+              style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8, background: C.surfaceHigh, cursor: "pointer", textAlign: "left" }}>
+              <span style={{ minWidth: 0 }}>
+                <span style={{ display: "block", fontFamily: mono, fontSize: 12, color: C.textSub, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                <span style={{ fontFamily: sans, fontSize: 11, color: C.textFaint }} title={fmtDate(s.created_at)}>
+                  {timeAgo(s.created_at)} · {s.endpoint_count} endpoints
+                </span>
+              </span>
+              <span style={{ fontFamily: sans, fontSize: 12, fontWeight: 600, color: C.accent, flexShrink: 0 }}>Compare →</span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DeltaStat({ label, before, after, delta, goodWhenUp }) {
+  return (
+    <div style={{ background: C.surfaceHigh, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 12px", minWidth: 96 }}>
+      <div style={{ fontFamily: mono, fontSize: 18, fontWeight: 700, color: deltaColor(delta, goodWhenUp), lineHeight: 1 }}>
+        {delta == null ? "—" : fmtDelta(delta)}
+      </div>
+      <div style={{ fontFamily: sans, fontSize: 11, color: C.textMuted, marginTop: 5 }}>{label}</div>
+      <div style={{ fontFamily: mono, fontSize: 10, color: C.textFaint, marginTop: 2 }}>{before} → {after}</div>
+    </div>
+  );
+}
+
+function CompareColumn({ title, items, tone, empty }) {
+  return (
+    <div data-testid={`compare-${title.toLowerCase()}`} style={{ background: C.surface, border: `1px solid ${C.border}`, borderTop: `3px solid ${tone.color}`, borderRadius: 10, padding: "12px 12px 14px", minWidth: 0 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+        <span style={{ fontFamily: sans, fontSize: 13, fontWeight: 700, color: tone.color }}>{title}</span>
+        <Badge label={String(items.length)} color={tone.color} bg={tone.bg} border={tone.border} small />
+      </div>
+      {items.length === 0
+        ? <div style={{ fontFamily: sans, fontSize: 12, color: C.textFaint }}>{empty}</div>
+        : <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {items.map(f => (
+              <div key={f.id} style={{ background: tone.bg, border: `1px solid ${tone.border}`, borderRadius: 7, padding: "8px 10px" }}>
+                <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap", marginBottom: 4 }}>
+                  <Badge label={f.severity} color={sevColor(f.severity)} bg={sevBg(f.severity)} border={sevBorder(f.severity)} small />
+                  {f.severity_before && <span style={{ fontFamily: sans, fontSize: 11, color: C.textMuted }}>was {f.severity_before}</span>}
+                </div>
+                <div style={{ fontFamily: sans, fontSize: 12, fontWeight: 600, color: C.textSub, lineHeight: 1.4 }}>{f.vulnerability || f.risk_type}</div>
+                <div style={{ fontFamily: mono, fontSize: 11, color: C.textMuted, marginTop: 2, wordBreak: "break-all" }}>{f.method} {f.endpoint}</div>
+              </div>
+            ))}
+          </div>}
+    </div>
+  );
+}
+
+const OUTCOME_COLOR = { passed: C.green, failed: C.red, skipped: C.textMuted, absent: C.textFaint };
+
+function CompareView({ data, onBack }) {
+  const { findings, severity, tests, deployment } = data;
+  return (
+    <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, marginBottom: 14, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontFamily: sans, fontSize: 15, fontWeight: 700, color: C.text }}>
+            What changed in {data.target.api_title || "this API"}
+          </div>
+          <div style={{ fontFamily: sans, fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+            <span title={fmtDate(data.base.created_at)}>Earlier scan ({timeAgo(data.base.created_at)})</span>
+            {" → "}
+            <span title={fmtDate(data.target.created_at)}>this scan ({timeAgo(data.target.created_at)})</span>
+            {!data.same_api && <span style={{ color: C.yellow }}> · different API titles</span>}
+          </div>
+        </div>
+        <Btn onClick={onBack} variant="subtle" small>← Back to report</Btn>
+      </div>
+
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 16 }}>
+        {["CRITICAL", "HIGH", "MEDIUM", "LOW"].map(s => (
+          <DeltaStat key={s} label={s.charAt(0) + s.slice(1).toLowerCase()} goodWhenUp={false}
+            before={severity.base[s]} after={severity.target[s]} delta={severity.delta[s]} />
+        ))}
+        <DeltaStat label="Tests passed" goodWhenUp before={tests.base.passed} after={tests.target.passed} delta={tests.delta.passed} />
+        <DeltaStat label="Tests failed" goodWhenUp={false} before={tests.base.failed} after={tests.target.failed} delta={tests.delta.failed} />
+        <DeltaStat label="Deployment score" goodWhenUp before={deployment.base_score} after={deployment.target_score} delta={deployment.score_delta} />
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 12, marginBottom: 16 }}>
+        <CompareColumn title="New" items={findings.new} empty="No new findings."
+          tone={{ color: C.red, bg: C.redLight, border: C.redBorder }} />
+        <CompareColumn title="Fixed" items={findings.fixed} empty="Nothing fixed since the earlier scan."
+          tone={{ color: C.green, bg: C.greenLight, border: C.greenBorder }} />
+        <CompareColumn title="Unchanged" items={findings.unchanged} empty="No findings carried over."
+          tone={{ color: C.textMuted, bg: C.surfaceHigh, border: C.border }} />
+      </div>
+
+      {tests.changes.length > 0 && (
+        <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, padding: "12px 14px" }}>
+          <SectionHeader title="Test results that changed" count={tests.changes.length} />
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            {tests.changes.map((c, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: "space-between", gap: 12, fontSize: 12, padding: "6px 0", borderBottom: `1px solid ${C.border}60`, flexWrap: "wrap" }}>
+                <span style={{ fontFamily: mono, color: C.textSub, wordBreak: "break-all" }}>{c.method} {c.endpoint} · {c.test.replace(/_/g, " ")}</span>
+                <span style={{ fontFamily: mono }}>
+                  <span style={{ color: OUTCOME_COLOR[c.before] }}>{c.before}{c.status_before ? ` (${c.status_before})` : ""}</span>
+                  <span style={{ color: C.textFaint }}> → </span>
+                  <span style={{ color: OUTCOME_COLOR[c.after], fontWeight: 600 }}>{c.after}{c.status_after ? ` (${c.status_after})` : ""}</span>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1168,10 +1372,24 @@ function BaselineView({ report, onRecheck }) {
 }
 
 // ─── Report View ──────────────────────────────────────────────────
-function ReportView({ report, onRescan, onRecheck, specId }) {
+function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch }) {
   const [tab, setTab] = useState("security");
+  // Comparison: null | {picking: true} | {loading} | {data} | {error}
+  const [cmp, setCmp] = useState(null);
   if (isBaselineReport(report)) return <BaselineView report={report} onRecheck={onRecheck} />;
   const s = report.summary || {};
+
+  const startCompare = async (earlier) => {
+    setCmp({ loading: true });
+    try {
+      const data = await apiFetch(`/api/scans/compare?base=${encodeURIComponent(earlier.id)}&target=${encodeURIComponent(scanId)}`);
+      setCmp({ data });
+    } catch (e) {
+      setCmp({ picking: true, error: e.message || "Comparison failed" });
+    }
+  };
+
+  if (cmp?.data) return <CompareView data={cmp.data} onBack={() => setCmp(null)} />;
 
   const exportJSON = () => exportReportJSON(report);
 
@@ -1186,7 +1404,15 @@ function ReportView({ report, onRescan, onRecheck, specId }) {
 
   return (
     <div>
-      <ScanHeader report={report} />
+      <ScanHeader report={report}
+        onCompare={scanId && apiFetch ? () => setCmp({ picking: true }) : undefined} />
+      {cmp?.picking && (
+        <>
+          {cmp.error && <div style={{ fontFamily: sans, fontSize: 13, color: C.red, marginBottom: 8 }}>{cmp.error}</div>}
+          <ComparePicker apiFetch={apiFetch} scanId={scanId} onPick={startCompare} onCancel={() => setCmp(null)} />
+        </>
+      )}
+      {cmp?.loading && <div style={{ fontFamily: sans, fontSize: 13, color: C.textMuted, marginBottom: 12 }}>Comparing…</div>}
       <SeveritySummary summary={s} deepScanPerformed={report.deep_scan_performed} deepScanCount={report.deep_scan_summary?.findings_enriched} />
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 8, padding: "10px 16px", marginBottom: 16, fontFamily: sans, fontSize: 13 }}>
@@ -1261,6 +1487,80 @@ function InputPanel({ title, children }) {
   );
 }
 
+// ─── Scan options (auth + safe mode), sent with every stream request ──
+function ScanOptionsPanel({ options, onChange, disabled }) {
+  const [open, setOpen] = useState(false);
+  const set = (patch) => onChange({ ...options, ...patch });
+  const needsValue = options.authType !== "none";
+  const labelStyle = { display: "block", fontFamily: sans, fontSize: 11, fontWeight: 600, color: C.textMuted, marginBottom: 4 };
+
+  return (
+    <div style={{ background: C.surface, border: `1px solid ${C.border}`, borderRadius: 10, marginBottom: 16, boxShadow: C.shadow, overflow: "hidden" }}>
+      <button type="button" onClick={() => setOpen(o => !o)} aria-expanded={open} aria-controls="scan-options-body"
+        style={{ width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, padding: "12px 16px", background: C.surfaceHigh, border: "none", cursor: "pointer", fontFamily: sans, textAlign: "left" }}>
+        <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>Scan options</span>
+        <span style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 12, color: options.safeMode ? C.textMuted : C.yellow }}>{describeScanOptions(options)}</span>
+          <span style={{ color: C.textFaint, fontSize: 12 }}>{open ? "▲" : "▼"}</span>
+        </span>
+      </button>
+
+      {open && (
+        <div id="scan-options-body" style={{ padding: 16, borderTop: `1px solid ${C.border}`, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: 14, alignItems: "start" }}>
+          <div>
+            <label htmlFor="scan-auth-type" style={labelStyle}>Authentication</label>
+            <select id="scan-auth-type" value={options.authType} disabled={disabled}
+              onChange={e => set({ authType: e.target.value })}
+              style={{ fontFamily: sans, fontSize: 13, width: "100%", padding: "9px 10px", borderRadius: 7, border: `1px solid ${C.border}`, background: C.surface, color: C.text }}>
+              {AUTH_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+            </select>
+          </div>
+
+          {needsValue && (
+            <div>
+              <label htmlFor="scan-auth-value" style={labelStyle}>
+                {options.authType === "basic" ? "Credentials" : options.authType === "api_key" ? "API key" : "Token"}
+              </label>
+              {/* Kept in memory only: never saved to localStorage or the report */}
+              <Input id="scan-auth-value" type="password" autoComplete="off" spellCheck={false} disabled={disabled}
+                value={options.authValue} onChange={e => set({ authValue: e.target.value })}
+                placeholder={AUTH_VALUE_PLACEHOLDER[options.authType]} />
+            </div>
+          )}
+
+          {options.authType === "api_key" && (
+            <div>
+              <label htmlFor="scan-auth-header" style={labelStyle}>Header name</label>
+              <Input id="scan-auth-header" autoComplete="off" spellCheck={false} disabled={disabled}
+                value={options.headerName} onChange={e => set({ headerName: e.target.value })}
+                placeholder={DEFAULT_API_KEY_HEADER} />
+            </div>
+          )}
+
+          <label style={{ display: "flex", gap: 8, alignItems: "flex-start", fontFamily: sans, fontSize: 13, color: C.textSub, cursor: disabled ? "default" : "pointer", gridColumn: "1 / -1" }}>
+            <input type="checkbox" checked={options.safeMode} disabled={disabled}
+              onChange={e => set({ safeMode: e.target.checked })} style={{ marginTop: 3 }} />
+            <span>
+              <strong>Safe mode — never send DELETE/PUT/PATCH</strong>
+              <span style={{ display: "block", fontSize: 12, color: options.safeMode ? C.textFaint : C.yellow, marginTop: 2 }}>
+                {options.safeMode
+                  ? "Endpoints using these methods are skipped, so the scan can't modify or delete data."
+                  : "Off: the scan will send DELETE/PUT/PATCH requests and may modify or delete data on the target."}
+              </span>
+            </span>
+          </label>
+
+          {needsValue && (
+            <div style={{ gridColumn: "1 / -1", fontFamily: sans, fontSize: 11, color: C.textFaint }}>
+              Sent to the target with each test request. Kept in memory for this session only: not saved in the browser or in the report.
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // Optional target base URL for pasted / uploaded specs
 function TargetUrlField({ value, onChange }) {
   return (
@@ -1311,6 +1611,7 @@ export default function App() {
     setReport(null);
     setSpecId(null);
     setActiveScanId(null);
+    setScanOpts(DEFAULT_SCAN_OPTIONS);   // drop any credential with the session
   };
 
   // ── API hook (uses Firebase token) ────────────────────────────
@@ -1332,6 +1633,8 @@ export default function App() {
   const [error,        setError]        = useState("");
   const [sidebarKey,   setSidebarKey]   = useState(0);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // Auth + safe mode for scans. React state only — never persisted.
+  const [scanOpts,     setScanOpts]     = useState(DEFAULT_SCAN_OPTIONS);
 
   const wrap = async (fn) => {
     setLoading(true); setError("");
@@ -1367,41 +1670,59 @@ export default function App() {
   const runScanStream = async (sid) => {
     const id = sid || specId;
     if (!id) return;
+    // Every run (first scan, re-scan, URL scan) sends the current options
+    const { body, error: optsError } = buildScanRequestBody(scanOpts);
+    if (optsError) { setError(optsError); return; }
     setStreaming(true); setStreamEvents([]); setReport(null); setError("");
 
     try {
       const token   = user ? await getIdToken() : null;
-      const headers = token ? { "Authorization": `Bearer ${token}` } : {};
+      const headers = { "Content-Type": "application/json" };
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      const response = await fetch(`${BASE}/api/run/${id}/stream`, { method: "POST", headers });
+      const response = await fetch(`${BASE}/api/run/${id}/stream`, {
+        method: "POST", headers, body: JSON.stringify(body),
+      });
       if (response.status === 401) throw new Error("Authentication failed — please sign in again");
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
+      const parser  = createSSEParser();   // buffers events split across chunks
       const events  = [];
+      let finished  = false;               // got [DONE]
+      let gotReport = false;
+      let gotError  = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text  = decoder.decode(value, { stream: true });
-        const lines = text.split("\n").filter(l => l.startsWith("data: "));
-        for (const line of lines) {
-          const raw = line.slice(6).trim();
-          if (raw === "[DONE]") break;
-          try {
-            const ev = JSON.parse(raw);
-            events.push(ev);
-            setStreamEvents([...events]);
-            if (ev.agent === "report" && ev.status === "completed") {
-              setReport(ev.data.report);
-              setActiveScanId(id);
-              setSidebarKey(k => k + 1);
-            }
-            if (ev.agent === "error") setError(ev.data?.message || "Scan failed");
-          } catch { }
+      const handle = (payload) => {
+        if (payload.trim() === SSE_DONE) { finished = true; return; }
+        let ev;
+        try { ev = JSON.parse(payload); }
+        catch { console.warn("Unparseable SSE event", payload.slice(0, 200)); return; }
+        events.push(ev);
+        setStreamEvents([...events]);
+        if (ev.agent === "report" && ev.status === "completed") {
+          gotReport = true;
+          setReport(ev.data.report);
+          setActiveScanId(id);
+          setSidebarKey(k => k + 1);
         }
+        if (ev.agent === "error") { gotError = true; setError(ev.data?.message || "Scan failed"); }
+      };
+
+      while (!finished) {
+        const { done, value } = await reader.read();
+        const payloads = done
+          ? parser.push(decoder.decode()).concat(parser.flush())
+          : parser.push(decoder.decode(value, { stream: true }));
+        for (const p of payloads) {
+          handle(p);
+          if (finished) break;
+        }
+        if (done) break;
       }
+      if (finished) reader.cancel().catch(() => {});
+      if (!gotReport && !gotError) setError("Scan stream ended before the report arrived");
     } catch (e) {
       setError(e.message || "Scan failed");
     } finally {
@@ -1414,6 +1735,9 @@ export default function App() {
   const scanUrl = async (urlOverride) => {
     const url = (typeof urlOverride === "string" ? urlOverride : apiUrl).trim();
     if (!url) { setError("Please enter a URL"); return; }
+    // Check scan options before discovery stores anything
+    const { error: optsError } = buildScanRequestBody(scanOpts);
+    if (optsError) { setError(optsError); return; }
     setLoading(true); setError(""); setReport(null); setSpecId(null);
     let data;
     try {
@@ -1564,6 +1888,9 @@ export default function App() {
             </InputPanel>
           </div>
 
+          {/* Scan options: apply to Run, Re-scan and Scan URL */}
+          <ScanOptionsPanel options={scanOpts} onChange={setScanOpts} disabled={loading || streaming} />
+
           {/* Upload ready banner */}
           {specId && !report && !streaming && (
             <div style={{ background: C.accentLight, border: `1px solid ${C.accentBorder}`, borderRadius: 10, padding: "14px 20px", display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, boxShadow: C.shadow }}>
@@ -1586,7 +1913,9 @@ export default function App() {
           {streaming && streamEvents.length > 0 && <ScanProgress events={streamEvents} />}
 
           {report && !streaming && (
-            <ReportView report={report} specId={specId} onRescan={() => runScanStream(specId)}
+            <ReportView key={activeScanId || "none"} report={report} specId={specId}
+              scanId={activeScanId} apiFetch={apiFetch}
+              onRescan={() => runScanStream(specId)}
               onRecheck={(url) => { setApiUrl(url); scanUrl(url); }} />
           )}
 
@@ -1606,3 +1935,5 @@ export default function App() {
     </div>
   );
 }
+// Named exports for tests
+export { ScanOptionsPanel, TestResults, ScanHeader, ReportView, CompareView };
