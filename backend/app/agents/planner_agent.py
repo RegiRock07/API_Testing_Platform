@@ -14,6 +14,25 @@ from app.services.llm_service import call_llm, parse_llm_json, LLMError
 
 logger = logging.getLogger(__name__)
 
+# How many endpoints (highest-risk first) the LLM sees, and a hard cap on
+# the serialized endpoint list. llm_service rejects prompts over ~6000
+# tokens (~24k chars), so this keeps the planner well under that limit
+# even when endpoints carry large resolved schemas.
+MAX_LLM_ENDPOINTS      = 40
+MAX_ENDPOINT_JSON_CHARS = 12000
+
+
+def compact_endpoint(ep: dict) -> dict:
+    """The fields the planner needs — no schemas, examples or responses."""
+    return {
+        "path":          ep.get("path", ""),
+        "method":        ep.get("method", ""),
+        "summary":       (ep.get("summary") or "")[:100],
+        "params":        [p.get("name") for p in ep.get("parameters", []) or []
+                          if isinstance(p, dict) and p.get("name")],
+        "requires_auth": bool(ep.get("requires_auth", False)),
+    }
+
 
 class PlannerAgent:
 
@@ -126,9 +145,18 @@ class PlannerAgent:
 
     def run(self, parsed_data: dict) -> dict:
         endpoints = parsed_data.get("endpoints", [])
-        high_risk = [e for e in endpoints if "{" in e["path"] or e["method"] in ("POST", "PUT", "DELETE")]
+        high_risk = [e for e in endpoints
+                     if "{" in e["path"] or e["method"] in ("POST", "PUT", "PATCH", "DELETE")]
         others    = [e for e in endpoints if e not in high_risk]
-        priority_endpoints = (high_risk + others)[:5]
+        compact   = [compact_endpoint(e) for e in (high_risk + others)[:MAX_LLM_ENDPOINTS]]
+
+        # Drop lowest-priority entries until the list fits the char budget
+        endpoints_json = json.dumps(compact, separators=(",", ":"))
+        while len(endpoints_json) > MAX_ENDPOINT_JSON_CHARS and len(compact) > 1:
+            compact.pop()
+            endpoints_json = json.dumps(compact, separators=(",", ":"))
+        priority_endpoints = compact
+
         title     = parsed_data.get("title", "Unknown API")
         version   = parsed_data.get("version", "Unknown")
         base_url  = parsed_data.get("base_url", "")
@@ -144,8 +172,9 @@ class PlannerAgent:
 API Title: {title}
 Version: {version}
 Base URL: {base_url}
-Endpoints ({len(endpoints)} total, showing {len(priority_endpoints)} highest risk):
-{json.dumps(priority_endpoints, indent=2)}
+Endpoints ({len(endpoints)} total, showing {len(priority_endpoints)}, highest risk first;
+"params" lists parameter names, "requires_auth" is whether the spec declares security):
+{endpoints_json}
 
 Respond ONLY with a valid JSON object matching this exact structure:
 {{
