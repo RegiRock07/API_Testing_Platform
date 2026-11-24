@@ -30,6 +30,7 @@ app.add_middleware(
     allow_credentials=ALLOW_CREDENTIALS,
     allow_methods=["*"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition"],   # lets the UI read the PDF's filename
 )
 
 app.include_router(router)

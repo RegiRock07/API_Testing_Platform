@@ -123,8 +123,32 @@ function useApi(user) {
     return data;
   }, [user]);
 
-  return { apiFetch, apiUpload };
+  // Binary download (e.g. the PDF report): same auth header, returns {blob, filename}
+  const apiDownload = useCallback(async (path, fallbackName = "download") => {
+    const token = user ? await getIdToken() : null;
+    const headers = {};
+    if (token) headers["Authorization"] = `Bearer ${token}`;
+
+    const res = await fetch(BASE + path, { headers });
+    if (res.status === 401) throw new Error("AUTH_FAILED");
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.detail || `HTTP ${res.status}`);
+    }
+    const match = /filename="?([^";]+)"?/i.exec(res.headers.get("Content-Disposition") || "");
+    return { blob: await res.blob(), filename: match ? match[1] : fallbackName };
+  }, [user]);
+
+  return { apiFetch, apiUpload, apiDownload };
 }
+
+const saveBlob = (blob, filename) => {
+  const url = URL.createObjectURL(blob);
+  const a   = document.createElement("a");
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+};
 
 // ─── Primitives ───────────────────────────────────────────────────
 function Badge({ label, color, bg, border, small }) {
@@ -1372,10 +1396,12 @@ function BaselineView({ report, onRecheck }) {
 }
 
 // ─── Report View ──────────────────────────────────────────────────
-function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch }) {
+function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch, apiDownload }) {
   const [tab, setTab] = useState("security");
   // Comparison: null | {picking: true} | {loading} | {data} | {error}
   const [cmp, setCmp] = useState(null);
+  // PDF download: null | "loading" | {error}
+  const [pdf, setPdf] = useState(null);
   if (isBaselineReport(report)) return <BaselineView report={report} onRecheck={onRecheck} />;
   const s = report.summary || {};
 
@@ -1392,6 +1418,18 @@ function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch }) {
   if (cmp?.data) return <CompareView data={cmp.data} onBack={() => setCmp(null)} />;
 
   const exportJSON = () => exportReportJSON(report);
+
+  const downloadPDF = async () => {
+    setPdf("loading");
+    try {
+      const { blob, filename } = await apiDownload(
+        `/api/scans/${encodeURIComponent(scanId)}/report/pdf`, `sentinel-report-${scanId}.pdf`);
+      saveBlob(blob, filename);
+      setPdf(null);
+    } catch (e) {
+      setPdf({ error: e.message === "AUTH_FAILED" ? "Session expired, sign in again" : (e.message || "PDF download failed") });
+    }
+  };
 
   const tabs = [
     { key: "security",   label: "Security",        count: s.total_security_findings },
@@ -1421,9 +1459,15 @@ function ReportView({ report, onRescan, onRecheck, specId, scanId, apiFetch }) {
           {report.deep_scan_performed ? "Deep scan performed · " : ""}
           {s.total_security_findings} findings total
         </span>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          {pdf?.error && <span role="alert" style={{ color: C.red, fontSize: 12 }}>{pdf.error}</span>}
           {specId && onRescan && <Btn onClick={onRescan} variant="ghost" small>↺ Re-scan</Btn>}
           <Btn onClick={exportJSON} variant="subtle" small>↓ Export JSON</Btn>
+          {scanId && apiDownload && (
+            <Btn onClick={downloadPDF} variant="subtle" small disabled={pdf === "loading"}>
+              {pdf === "loading" ? "Preparing PDF…" : "↓ Download PDF"}
+            </Btn>
+          )}
         </div>
       </div>
 
@@ -1615,7 +1659,7 @@ export default function App() {
   };
 
   // ── API hook (uses Firebase token) ────────────────────────────
-  const { apiFetch, apiUpload } = useApi(user);
+  const { apiFetch, apiUpload, apiDownload } = useApi(user);
 
   // ── Scan state ─────────────────────────────────────────────────
   const [specText,     setSpecText]     = useState("");
@@ -1914,7 +1958,7 @@ export default function App() {
 
           {report && !streaming && (
             <ReportView key={activeScanId || "none"} report={report} specId={specId}
-              scanId={activeScanId} apiFetch={apiFetch}
+              scanId={activeScanId} apiFetch={apiFetch} apiDownload={apiDownload}
               onRescan={() => runScanStream(specId)}
               onRecheck={(url) => { setApiUrl(url); scanUrl(url); }} />
           )}

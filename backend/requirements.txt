@@ -19,3 +19,6 @@ google-genai==3.6.1
 
 # Auth
 firebase-admin==7.8.0
+
+# PDF report export
+reportlab==5.1.1
