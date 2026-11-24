@@ -57,7 +57,9 @@ class SecurityAgent:
             path   = ep["path"]
             method = ep["method"]
             has_param      = "{" in path and "}" in path
-            has_auth_scheme = auth_type != "none"
+            # Semester-2: use the endpoint's effective `security` from the spec
+            # (operation-level overrides global) instead of "never any auth".
+            has_auth_scheme = ep.get("requires_auth", auth_type != "none")
 
             # ── OWASP API1: BOLA ─────────────────────────────────
             # Only fire if there is actually a path parameter
@@ -97,13 +99,11 @@ class SecurityAgent:
 
             # ── OWASP API2: Broken Authentication ─────────────────
             mutating_methods = ["POST", "PUT", "PATCH", "DELETE"]
-            if method in mutating_methods:
-                if has_auth_scheme:
-                    confidence = "LOW"
-                    severity   = "LOW"
-                else:
-                    confidence = "MEDIUM"
-                    severity   = "MEDIUM"   # capped — STATIC
+            # Only flag when the spec declares NO security requirement for
+            # this operation (previously fired on every mutating endpoint).
+            if method in mutating_methods and not has_auth_scheme:
+                confidence = "MEDIUM"
+                severity   = "MEDIUM"   # capped — STATIC
 
                 raw_findings.append({
                     "endpoint":       path,
@@ -192,6 +192,12 @@ class SecurityAgent:
                         methods.append(f["method"])
 
         findings = list(seen.values())
+
+        # Stable unique id per finding — used by the Verifier and Deep Scan
+        # to match findings (old key (endpoint, risk_type) collided when the
+        # same path had e.g. both POST and PUT findings).
+        for f in findings:
+            f["id"] = f"{f['risk_type'].split(' (')[0]}|{f['method']}|{f['endpoint']}"
 
         # Severity counts
         critical_count = len([f for f in findings if f.get("severity") == "CRITICAL"])

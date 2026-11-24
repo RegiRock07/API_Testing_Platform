@@ -38,16 +38,21 @@ DOCS_PATHS = [
 
 class DeploymentAgent:
 
-    def run(self, base_url: str = "http://localhost:8000") -> dict:
-        base_url   = base_url.rstrip("/")
+    def run(self, base_url: str = "") -> dict:
+        base_url   = (base_url or "").rstrip("/")
         start_time = time.time()
 
         # ── Connectivity check ────────────────────────────────────
+        # Semester-2: probe the API's own base URL. Previously this called
+        # {base_url}/health, which most APIs don't have -> every target was
+        # reported "unhealthy" and headers were read off a 404 page.
+        if not base_url:
+            return self._unreachable("No target base URL available for this scan")
         try:
-            r          = requests.get(f"{base_url}/health", timeout=10)
+            r          = requests.get(base_url, timeout=10)
             latency_ms = round((time.time() - start_time) * 1000, 2)
             status_code = r.status_code
-            status      = "healthy" if r.status_code == 200 else "unhealthy"
+            status      = "healthy" if r.status_code < 500 else "unhealthy"
         except requests.exceptions.ConnectionError:
             return self._unreachable(
                 "Connection refused — service may be down or URL is incorrect"
@@ -142,7 +147,7 @@ class DeploymentAgent:
 
         # ── 5. Security score (0–6) ───────────────────────────────
         score = 0
-        if status_code == 200:           score += 1
+        if status_code < 500:            score += 1
         if not missing_headers:          score += 1
         if https_enforced:               score += 1
         if not cors_misconfigured:       score += 1

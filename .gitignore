@@ -9,3 +9,7 @@ __pycache__/
 
 # Docker volumes
 sentinel_data/
+.venv/
+node_modules/
+.DS_Store
+
