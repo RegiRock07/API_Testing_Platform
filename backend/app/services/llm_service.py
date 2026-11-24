@@ -74,7 +74,8 @@ def _call_groq(messages: list) -> str:
     Tries PRIMARY model first, falls back to FALLBACK model.
     Raises LLMError on complete failure.
     """
-    from app.config import GROQ_MODEL_PRIMARY, GROQ_MODEL_FALLBACK, GROQ_API_KEY
+    from app.config import (GROQ_MODEL_PRIMARY, GROQ_MODEL_FALLBACK, GROQ_API_KEY,
+                            LLM_TIMEOUT_SECONDS)
 
     api_key = GROQ_API_KEY or os.getenv("GROQ_API_KEY", "")
     if not api_key:
@@ -87,7 +88,10 @@ def _call_groq(messages: list) -> str:
 
     try:
         from groq import Groq
-        client = Groq(api_key=api_key)
+        # SDK default is 60s read timeout with 2 retries (up to ~3 min per
+        # model). One attempt, hard timeout; the model fallback below is
+        # the retry.
+        client = Groq(api_key=api_key, timeout=LLM_TIMEOUT_SECONDS, max_retries=0)
     except ImportError:
         raise LLMError("groq package is not installed. Run: pip install groq")
     except Exception as e:
@@ -169,7 +173,8 @@ def _call_gemini(messages: list) -> str:
     Free tier via AI Studio — 1,500 requests/day.
     """
     from google import genai
-    from app.config import GEMINI_MODEL
+    from google.genai import types
+    from app.config import GEMINI_MODEL, LLM_TIMEOUT_SECONDS
 
     api_key = os.getenv("GOOGLE_API_KEY", "")
     if not api_key:
@@ -179,7 +184,13 @@ def _call_gemini(messages: list) -> str:
         )
 
     try:
-        client = genai.Client(api_key=api_key)
+        client = genai.Client(
+            api_key=api_key,
+            http_options=types.HttpOptions(
+                timeout=int(LLM_TIMEOUT_SECONDS * 1000),           # milliseconds
+                retry_options=types.HttpRetryOptions(attempts=1),  # no hidden retries
+            ),
+        )
     except Exception as e:
         raise LLMError(f"Failed to initialise Gemini client: {e}")
 

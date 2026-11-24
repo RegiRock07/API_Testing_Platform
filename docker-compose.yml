@@ -24,8 +24,13 @@ services:
     ports:
       - "8000:8000"
     environment:
-      # Auth — leave blank to disable (dev mode)
+      # ── Auth ───────────────────────────────────────────
+      # Leave both blank for dev mode (no sign-in required).
+      # SENTINEL_API_KEY: shared key checked in dev mode (Authorization: ApiKey <key>)
       - SENTINEL_API_KEY=${SENTINEL_API_KEY:-}
+      # Firebase service-account JSON on ONE line (wrap it in single quotes
+      # in .env). When set, every request needs a Firebase ID token.
+      - FIREBASE_CREDENTIALS_JSON=${FIREBASE_CREDENTIALS_JSON:-}
 
       # ── LLM Configuration ──────────────────────────────
       # "groq" = cloud (fast, free tier available)
@@ -39,6 +44,13 @@ services:
       - GROQ_MODEL_PRIMARY=${GROQ_MODEL_PRIMARY:-openai/gpt-oss-120b}
       - GROQ_MODEL_FALLBACK=${GROQ_MODEL_FALLBACK:-openai/gpt-oss-20b}
       - GROQ_TEMPERATURE=${GROQ_TEMPERATURE:-0.2}
+
+      # Gemini — used when Groq fails (or LLM_PROVIDER=gemini)
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY:-}
+      - GEMINI_MODEL=${GEMINI_MODEL:-gemini-3.8-flash}
+
+      # Seconds before a Groq/Gemini call is abandoned
+      - LLM_TIMEOUT_SECONDS=${LLM_TIMEOUT_SECONDS:-45}
 
       # Ollama — only needed if LLM_PROVIDER=ollama
       - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
@@ -54,11 +66,14 @@ services:
     volumes:
       - sentinel_data:/data
 
+    # python:3.11-slim has no curl — use the interpreter that's already there.
+    # urlopen raises on connection errors and non-2xx, giving a non-zero exit.
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=4)"]
       interval: 30s
       timeout: 5s
       retries: 3
+      start_period: 20s
 
   frontend:
     build:

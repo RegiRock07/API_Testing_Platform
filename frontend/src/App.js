@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import { createSSEParser, SSE_DONE } from "./sse";
 import { signInWithGoogle, signOut, onAuth, getIdToken } from "./firebase";
 
 // ─── Config ───────────────────────────────────────────────────────
@@ -1379,29 +1380,41 @@ export default function App() {
 
       const reader  = response.body.getReader();
       const decoder = new TextDecoder();
+      const parser  = createSSEParser();   // buffers events split across chunks
       const events  = [];
+      let finished  = false;               // got [DONE]
+      let gotReport = false;
+      let gotError  = false;
 
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        const text  = decoder.decode(value, { stream: true });
-        const lines = text.split("\n").filter(l => l.startsWith("data: "));
-        for (const line of lines) {
-          const raw = line.slice(6).trim();
-          if (raw === "[DONE]") break;
-          try {
-            const ev = JSON.parse(raw);
-            events.push(ev);
-            setStreamEvents([...events]);
-            if (ev.agent === "report" && ev.status === "completed") {
-              setReport(ev.data.report);
-              setActiveScanId(id);
-              setSidebarKey(k => k + 1);
-            }
-            if (ev.agent === "error") setError(ev.data?.message || "Scan failed");
-          } catch { }
+      const handle = (payload) => {
+        if (payload.trim() === SSE_DONE) { finished = true; return; }
+        let ev;
+        try { ev = JSON.parse(payload); }
+        catch { console.warn("Unparseable SSE event", payload.slice(0, 200)); return; }
+        events.push(ev);
+        setStreamEvents([...events]);
+        if (ev.agent === "report" && ev.status === "completed") {
+          gotReport = true;
+          setReport(ev.data.report);
+          setActiveScanId(id);
+          setSidebarKey(k => k + 1);
         }
+        if (ev.agent === "error") { gotError = true; setError(ev.data?.message || "Scan failed"); }
+      };
+
+      while (!finished) {
+        const { done, value } = await reader.read();
+        const payloads = done
+          ? parser.push(decoder.decode()).concat(parser.flush())
+          : parser.push(decoder.decode(value, { stream: true }));
+        for (const p of payloads) {
+          handle(p);
+          if (finished) break;
+        }
+        if (done) break;
       }
+      if (finished) reader.cancel().catch(() => {});
+      if (!gotReport && !gotError) setError("Scan stream ended before the report arrived");
     } catch (e) {
       setError(e.message || "Scan failed");
     } finally {
